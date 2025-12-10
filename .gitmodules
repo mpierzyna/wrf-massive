@@ -1,0 +1,9 @@
+[submodule "submodules/WRF"]
+	path = submodules/WRF
+	url = https://github.com/wrf-model/WRF.git
+[submodule "submodules/WPS"]
+	path = submodules/WPS
+	url = https://github.com/wrf-model/WPS.git
+[submodule "submodules/research_tools"]
+	path = submodules/research_tools
+	url = git@gitlab.tudelft.nl:mpierzyna/research-tools.git

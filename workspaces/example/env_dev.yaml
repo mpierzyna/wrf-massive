@@ -1,0 +1,9 @@
+machine: dev
+
+wps:
+  wps_tmpl_dir: "../../submodules/WPS"
+
+wrf:
+  wrf_tmpl_dir: "../../submodules/WRF"
+
+pipeline: "p_default"  # this needs to match a pipeline variable in pipeline.py
