@@ -19,6 +19,13 @@ More specifically,
 - Optionally, WRF and WPS are included as submodules in `submodules`. 
   You can pull them using `git submodule update --init --recursive` and build them according to their own instructions.
 
+> [!NOTE]
+> WRF Massive was created to generate a 1-year WRF dataset using CERRA forcing for the Netherlands as part of my
+> [OTProf](https://github.com/mpierzyna/otprof) deep learning project. Check out the
+> [data generation](https://github.com/mpierzyna/otprof/tree/main/data/nl/wrf) section for a production case of how
+> wrf-massive was used. For a template, which needs modification for your own setup, check the `example` workspace in 
+> this repository.
+
 ## Submodules vs external WRF/WPS
 
 - Using the included submodules (optional) to build WRF/WPS inside this repository:

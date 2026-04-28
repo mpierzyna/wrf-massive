@@ -139,5 +139,5 @@ If a stage's work directory contains `.done` the pipeline will skip that stage.
 - Use pydantic models for config fields and validation when possible.
 - Keep external side-effects (network, large downloads) behind `setup()` so tests can patch/mock them.
 - Be explicit about file names and markers to avoid accidental collisions between stages.
-- Use black to format code and isort for imports to maintain consistency.
+- Use black to format code to maintain consistency.
 
