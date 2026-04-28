@@ -75,7 +75,7 @@ Run the wrapper script from this directory (so relative imports and templates re
 2) Create the simulation directory and configuration files
 
 ```bash
-python3 cli.py init_sims simulations.py sim_test
+uv run cli.py init_sims simulations.py sim_test
 ```
 
 This loads the variable `sim_test` from `simulations.py` and creates/updates the simulation directory and rendered namelists.
@@ -86,10 +86,10 @@ Run one or more stages (comma-separated) for one or more simulation directories.
 
 ```bash
 # Run all stages for the single test simulation
-python3 cli.py run ./test_1
+uv run cli.py run ./test_1
 
 # Run only the WPS stage
-python3 cli.py run --stages wps ./test_1
+uv run cli.py run --stages wps ./test_1
 ```
 
 4) Submit to SLURM
@@ -98,10 +98,10 @@ To submit a stage as a SLURM job, provide a jobfile (an sbatch script). Example 
 
 ```bash
 # Submit full pipeline stages sequentially (each will be sbatch-ed)
-python3 cli.py submit --jobfile slurm_hpc.sh ./test_1
+uv run cli.py submit --jobfile slurm_hpc.sh ./test_1
 
 # Submit only the WRF stage and require the job to depend on job 12345
-python3 cli.py submit --stages wrf --jobfile slurm_hpc.sh --dep-job 12345 ./test_1
+uv run cli.py submit --stages wrf --jobfile slurm_hpc.sh --dep-job 12345 ./test_1
 ```
 
 The jobfile passed to `submit` must be an executable sbatch script that invokes the package's run wrapper (i.e., a small script that calls the `wrf_massive` stage runner and uses the stage name and sim dir arguments). Example job scripts are provided in the directory.
@@ -113,13 +113,13 @@ To quickly test that your setup works, you can run a short simulation with the f
 
 ```bash
 # Initialize the provided simulation
-python3 cli.py init_sims simulations.py sim_test
+uv run cli.py init_sims simulations.py sim_test
 
 # Run the simulation locally (all stages)
-python3 cli.py run ./test_1
+uv run cli.py run ./test_1
 
 # Or submit the simulation to SLURM
-python3 cli.py submit --jobfile slurm_hpc.sh ./test_1
+uv run cli.py submit --jobfile slurm_hpc.sh ./test_1
 ```
 
 Check the output logs in the `test_1` directory to verify that the simulation ran successfully.

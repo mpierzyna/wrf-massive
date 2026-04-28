@@ -5,7 +5,6 @@
 #SBATCH --ntasks-per-core=1
 
 # Set variables
-CONDA_ENV=/home/mpierzyna/.conda/envs/wrf_p312
 STAGE=$1
 SIM_DIR=$2
 
@@ -21,19 +20,15 @@ if [ -z "$STAGE" ] || [ -z "$SIM_DIR" ]; then
   exit 1
 fi
 
-# Load conda environment
-unset CONDA_SHLVL
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate $CONDA_ENV
-
 # Load modules
 module load 2024
 module load foss/2024a
 
 # Run (unbuffered)
+PYTHONUNBUFFERED=1 \
 OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK \
 OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK \
 MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK \
 VECLIB_MAXIMUM_THREADS=$SLURM_CPUS_PER_TASK \
 NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK \
-python -u cli.py run --stages=$STAGE $SIM_DIR
+uv run cli.py run --stages=$STAGE $SIM_DIR
