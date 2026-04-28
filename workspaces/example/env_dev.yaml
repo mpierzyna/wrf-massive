@@ -2,6 +2,7 @@ machine: dev
 
 wps:
   wps_tmpl_dir: "../../submodules/WPS"
+  geog_data_path: "/tmp"  # dummy path
 
 wrf:
   wrf_tmpl_dir: "../../submodules/WRF"

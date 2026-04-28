@@ -1,0 +1,1 @@
+This is a dummy file which would contain an index of CERRA data on the remote storage for fast local indexing.

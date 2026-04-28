@@ -35,7 +35,7 @@ env = yaml_to_dict(pathlib.Path("env.yaml").read_text())
 _cerra = PullCerraStage(
     work_dir="1_forcing",
     remote_path="tudelft:staff-umbrella/HBaki/CERRA",
-    remote_flist_path="CERRA_files.txt.gz",
+    remote_flist_path="CERRA_files.txt",
     n_transfers=4,
     resources=Resources(n_tasks=1, cpus_per_task=4, mem_per_cpu="1G"),
 )

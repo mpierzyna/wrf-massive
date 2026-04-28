@@ -3,6 +3,13 @@
 This README explains how to set up and run an example WRF study contained in workspaces/example.
 It describes what the `pipeline.py` and `simulations.py` files do, what the `env_*.yaml` files are for, and how to use the provided CLI to initialize, run, or submit simulations.
 
+> [!NOTE]
+> This example does not run by itself. It is intended as a starting point to 
+> to set up your own project.
+>
+> For a fully functional setup, visit the [OTProf](https://github.com/mpierzyna/otprof/tree/main/data/nl/wrf) project, where I used
+> wrf-massive to generate 1-year of CERRA-forced WRF simulations of the Netherlands.
+
 
 ## Overview
 
