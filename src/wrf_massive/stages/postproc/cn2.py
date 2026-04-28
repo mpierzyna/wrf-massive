@@ -7,15 +7,47 @@ import datetime
 import pydantic
 import pathlib
 from typing import List, Tuple
+import numpy as np
 import shutil
 
-import research_tools.turb_tools as tt
-from research_tools.wrf_tools.postproc import load_wrfout
 from wrf_massive.base import Simulation, Stage, TPath
 from wrf_massive.log import get_logger
+from wrf_massive.stages.postproc.utils import load_wrfout
 
 logger = get_logger("stages.postproc.cn2")
 STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
+
+
+def get_ct2_hb15(*, var_theta, Lm):
+    """Variance-based CT2 parameterization from He and Basu (2015).
+
+    Parameters
+    ----------
+    var_theta : float
+        Variance of potential temperature, K^2.
+    Lm : float
+        Master length scale, m.
+
+    Returns
+    -------
+    CT2 : float
+        CT2 estimate, K^2 m^(-2/3).
+    """
+    # Coefficents from LES
+    B1 = 24
+    B2 = 15
+
+    # Clip Lm to avoid division by zero
+    Lm = np.clip(Lm, a_min=1e-4, a_max=None)
+
+    ct2 = 3.2 * B1 ** (1 / 3) / B2 * Lm ** (-2 / 3) * var_theta
+    return ct2
+
+
+def gladstone_cn2_simple(*, ct2, p_hPa, t_K):
+    """Simplified Gladstone equation without humidity correction."""
+    cn2 = (7.9e-5 * p_hPa / t_K**2) ** 2 * ct2
+    return cn2
 
 
 class PostprocCn2Stage(Stage):
@@ -118,7 +150,9 @@ class PostprocCn2Stage(Stage):
 
     def run_single(self, s: Simulation, i_f: int | pathlib.Path):
         f = self.get_inputs(s)[i_f] if isinstance(i_f, int) else i_f
-        f_out = self.get_work_dir(s) / f"{f.name.replace(':', '-')}_cn2.nc"  # replace `:` to avoid with tudelft project drive
+        f_out = (
+            self.get_work_dir(s) / f"{f.name.replace(':', '-')}_cn2.nc"
+        )  # replace `:` to avoid with tudelft project drive
 
         if f_out.exists():
             logger.info(f"Output file {f_out} already exists. Skipping.")
@@ -136,8 +170,8 @@ class PostprocCn2Stage(Stage):
         ds = load_wrfout(f, vars_to_extract=extract_vars, dt_warmup=None)  # warmup already discarded on file-level
 
         # Calculate Cn2 and Ct2
-        ct2 = tt.ct2_cn2.get_ct2_hb15(var_theta=ds["TSQ"], Lm=ds["EL_PBL"])
-        cn2 = tt.ct2_cn2.gladstone_cn2_simple(ct2=ct2, p_hPa=ds["p"] / 100, t_K=ds["tk"])
+        ct2 = get_ct2_hb15(var_theta=ds["TSQ"], Lm=ds["EL_PBL"])
+        cn2 = gladstone_cn2_simple(ct2=ct2, p_hPa=ds["p"] / 100, t_K=ds["tk"])
         ds["ct2"] = ct2
         ds["cn2"] = cn2
 

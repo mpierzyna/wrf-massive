@@ -9,7 +9,7 @@ logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s:%(name)s:%(m
 
 import pipeline
 from wrf_massive.cli import get_pipeline_cli
-from research_tools.misc_tools.yaml_config import yaml_to_dict
+from wrf_massive.config import yaml_to_dict
 
 # Load host-specific environment settings
 env = yaml_to_dict(pathlib.Path("env.yaml").read_text())

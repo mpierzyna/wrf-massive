@@ -10,7 +10,7 @@ from typing import List
 
 import pydantic
 
-from research_tools.misc_tools.yaml_config import BaseYAMLConfig, yaml_to_dict
+from wrf_massive.config import BaseYAMLConfig, yaml_to_dict
 from wrf_massive.log import get_logger
 
 logger = get_logger(__name__)

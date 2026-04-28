@@ -35,6 +35,7 @@ wrf-python = { git = "https://github.com/NCAR/wrf-python", tag = "v1.4.2" }
 
 [tool.black]
 line-length = 120  # align with pycharm
+target-version = ["py312"]
 # 'extend-exclude' excludes files or directories in addition to the defaults
 extend-exclude = '''
 # A regex preceded with ^/ will apply only to files and directories

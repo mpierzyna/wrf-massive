@@ -39,30 +39,20 @@ Use that as your primary reference for how to structure a workspace that uses th
 
 ## Environment setup
 
-A conda environment file is provided as `environment.yml` at the project root to create a reproducible Python environment. 
-It contains the Python packages typically needed to run the orchestration tools, utility scripts and tests.
-
-Create the environment (conda/miniconda/anaconda required):
-
-```bash
-conda env create -f environment.yml
-# or to update an existing env
-conda env update -f environment.yml
-```
-
-Activate it:
+This package is managed with the uv package manager. All dependencies are listed in `pyproject.toml`.
+To use wrf-python, a functional `gfortran` compiler needs to be installed (typically by having a working gcc installation).
+Set up the environment by running
 
 ```bash
-conda activate wrf-massive  # or the name defined in environment.yml
+uv sync
 ```
 
-If you prefer pip or another environment manager, use the package list in `environment.yml` as a reference to recreate 
-the environment. The project also contains `pyproject.toml` files that provide metadata for the Python packages in the workspace.
+Alternatively, just running commands with `uv run` will always make sure the environment is up to date.
+
 
 ## Quick start (high level)
 
-1. Create and activate the Python environment using `environment.yml`.
-2. Prepare WRF/WPS:
-3. Inspect `workspace/example` to copy example configuration and job templates into your workspace.
-4. Use the CLI in `wrf_massive` to create and submit evaluations (see `wrf_massive/cli.py` for the available commands). 
+1. Prepare WRF/WPS.
+2. Inspect `workspace/example` to copy example configuration and job templates into your workspace.
+3. Use the CLI in `wrf_massive` to create and submit evaluations (see `wrf_massive/cli.py` for the available commands).
    Typical invocation is via the Python CLI in your activated environment.

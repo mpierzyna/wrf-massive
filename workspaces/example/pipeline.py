@@ -10,9 +10,9 @@ Typically, a pipeline has the following stages:
 import logging
 import pathlib
 
-from research_tools.misc_tools.yaml_config import yaml_to_dict
 from simulations import sim_test
 from wrf_massive.base import Pipeline, Resources, Stage
+from wrf_massive.config import yaml_to_dict
 from wrf_massive.stages.forcing import PullCerraStage
 from wrf_massive.stages.misc import MarkDone
 from wrf_massive.stages.wps import WPSStage
