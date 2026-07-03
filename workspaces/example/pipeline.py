@@ -13,7 +13,12 @@ import pathlib
 from simulations import sim_test
 from wrf_massive.base import Pipeline, Resources, Stage
 from wrf_massive.config import yaml_to_dict
-from wrf_massive.stages.forcing import PullCerraStage
+from wrf_massive.stages.forcing import CdsRequestSpec, PullCdsStage, PullCerraStage
+from wrf_massive.stages.forcing.variables import (
+    ERA5_PRESSURE_LEVEL_VARIABLES,
+    ERA5_PRESSURE_LEVELS,
+    ERA5_SINGLE_LEVEL_VARIABLES,
+)
 from wrf_massive.stages.misc import MarkDone
 from wrf_massive.stages.wps import WPSStage
 from wrf_massive.stages.wrf import WRFStage
@@ -40,6 +45,30 @@ _cerra = PullCerraStage(
     resources=Resources(n_tasks=1, cpus_per_task=4, mem_per_cpu="1G"),
 )
 
+# Alternative to `_cerra`: download ERA5 directly from CDS instead of an rclone mirror (see
+# stages/forcing/cds.py). CERRA works the same way, just point `dataset`/`variables` at the CERRA
+# equivalents in `stages/forcing/variables.py` -- double-check those against your CDS account first,
+# see the module docstring.
+_era5_cds = PullCdsStage(
+    work_dir="1_forcing",
+    prefix="ERA5",
+    namelist_wps_path="namelist.tmpl.wps",  # validates Simulation.area covers the WRF domain
+    requests=[
+        CdsRequestSpec(
+            dataset="reanalysis-era5-pressure-levels",
+            variables=ERA5_PRESSURE_LEVEL_VARIABLES,
+            levels=ERA5_PRESSURE_LEVELS,
+            file_suffix="PRES",
+        ),
+        CdsRequestSpec(
+            dataset="reanalysis-era5-single-levels",
+            variables=ERA5_SINGLE_LEVEL_VARIABLES,
+            file_suffix="SFC",
+        ),
+    ],
+    resources=Resources(n_tasks=1, cpus_per_task=1, mem_per_cpu="1G"),
+)
+
 _wps = WPSStage(
     work_dir="2_wps",
     forcing_dir=_cerra.work_dir,  # 1_forcing
@@ -61,6 +90,16 @@ _sim_done = MarkDone(work_dir=".")  # mark whole simulation dir as done when all
 # Assemble default pipeline
 p_default = Pipeline(
     cerra=_cerra,
+    wps=_wps,
+    wrf=_wrf,
+    sim_done=_sim_done,
+)
+
+# Alternative: forcing data downloaded from CDS instead of pulled from an rclone mirror. Requires
+# `Simulation.area` to be set (see simulations.py) and CDS credentials (`~/.cdsapirc` or
+# `CDSAPI_URL`/`CDSAPI_KEY`).
+p_cds = Pipeline(
+    era5_cds=_era5_cds,
     wps=_wps,
     wrf=_wrf,
     sim_done=_sim_done,

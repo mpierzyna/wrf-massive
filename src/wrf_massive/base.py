@@ -100,6 +100,15 @@ class Stage(pydantic.BaseModel, abc.ABC):
         return work_dir
 
 
+class BBox(pydantic.BaseModel):
+    """Geographic lat/lon bounding box (degrees), e.g. for CDS/ARCO `area` requests."""
+
+    north: float
+    west: float
+    south: float
+    east: float
+
+
 class Simulation(BaseYAMLConfig):
     """Container and config object of a SINGLE WRF simulation."""
 
@@ -113,6 +122,10 @@ class Simulation(BaseYAMLConfig):
 
     # Simulation directory
     sim_dir: TPath
+
+    # Lat/lon bounding box forcing-data downloads (e.g. CDS `area`) should cover. Must fully contain the WRF
+    # domain (see stages/forcing/geo.py::validate_area_covers_domain).
+    area: BBox | None = None
 
     @property
     def name(self) -> str:

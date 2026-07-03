@@ -1,4 +1,4 @@
-from wrf_massive.base import Simulation
+from wrf_massive.base import BBox, Simulation
 
 # This is a config dictionary, which will be inserted into the namelist.tmpl.input (template)
 mynn25 = {
@@ -23,6 +23,9 @@ sim_test = Simulation(
     warmup_h=12,
     sim_dir="test_1",
     settings=mynn25,  # specify settings for namelist here
+    # Only needed if using PullCdsStage (p_cds in pipeline.py): must fully cover the WRF domain
+    # (checked by stages/forcing/geo.py::validate_area_covers_domain against namelist.tmpl.wps).
+    area=BBox(north=56, west=0, south=48, east=11),
 )
 
 

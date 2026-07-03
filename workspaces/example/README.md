@@ -30,6 +30,7 @@ Important files in this directory
 
 The example defines at least the following pipelines (names can differ by environment):
 - `p_default` — A straightforward pipeline with `cerra` (forcing), `wps` and `wrf` stages plus a `sim_done` marker (used for local/development runs).
+- `p_cds` — Same as `p_default`, but downloads ERA5 forcing data directly from the Copernicus Climate Data Store via `PullCdsStage` instead of pulling pre-mirrored CERRA GRIB via rclone. Requires `Simulation.area` to be set (see `simulations.py`) and CDS credentials (`~/.cdsapirc` or `CDSAPI_URL`/`CDSAPI_KEY`).
 - `p_hpc` — An HPC-tailored variant (defined when `env["machine"] == "hpc"` in `pipeline.py`) that assumes WPS/forcing may be handled externally and increases WRF resource allocations.
 
 Stages are executed in-order by name when the pipeline is asked to `run(...)`. On clusters, the provided CLI can submit each stage as a SLURM job or an array of jobs.
@@ -41,6 +42,9 @@ Simulations are represented by `Simulation` objects (from `wrf_massive.base`). E
 - `warmup_h` — Number of hours added before `begin` as model warmup.
 - `sim_dir` — Directory name to hold simulation input/output.
 - `settings` — Dictionary of settings that map into the namelist templates (e.g., physics options).
+- `area` — Optional lat/lon bounding box (`BBox`, N/W/S/E) that CDS-based forcing downloads (`PullCdsStage`) should
+  cover. Only needed if using `p_cds`; must fully contain the WRF domain, which is checked automatically against
+  `namelist.tmpl.wps`'s geogrid settings.
 
 In the example, `simulations.py` defines `sim_test`, a 1-day test simulation. You can add additional `Simulation` objects or a list of them. The CLI command `init_sims` will write the simulation directory and render template files into it.
 
