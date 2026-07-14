@@ -79,11 +79,17 @@ postproc).
    - `PullCdsStage` (`stages/forcing/cds.py`): downloads GRIB directly from the Copernicus Climate Data Store via
      the official `cdsapi` client — no pre-mirrored data needed. Takes a `prefix` (must match Vtable/`fg_name`,
      e.g. `"CERRA"`/`"ERA5"`) and a list of `CdsRequestSpec` (one per CDS dataset/variable-set, e.g. pressure-level
-     + single-level). Each request is split into one CDS retrieve **per calendar month**, producing
-     `<prefix>_<file_suffix>_<YYYYMM>.grb` files — this keeps each request's year/month/day cross-product
-     waste-free across month boundaries, and re-runs skip already-downloaded months. Multiple files per source
-     match `run_wps.sh`'s `find $FORCING_DIR -name '<prefix>*.grb'` glob (concatenated by `link_grib.csh`), so
-     **no downstream WPS changes are needed**. Per-request knobs: `product_type` (`"reanalysis"` for ERA5,
+     + single-level). Each request is downloaded as one CDS retrieve **per calendar month** (keeping the
+     request's year/month/day cross-product waste-free across month boundaries), then each monthly file is
+     **split into one GRIB file per valid time**, `<prefix>_<file_suffix>_<YYYYMMDD_HHMM>.grb`. The per-time split
+     is required because WPS ungrib decodes a single valid time per input file (`ungrib/src/rd_grib2.F` reads the
+     reference time once, from the first message, and applies it to the whole file), so a multi-time monthly file
+     would otherwise collapse onto its first timestep. The split (`split_grib_by_reference_time`) is a pure
+     byte-level copy that groups GRIB messages by their Section-1 reference time and handles both GRIB1 (ERA5) and
+     GRIB2 (CERRA), independent of the product-definition template (CERRA uses the local template 4.214). The
+     per-time files match `run_wps.sh`'s `find $FORCING_DIR -name '<prefix>*.grb'` glob (concatenated by
+     `link_grib.csh`); re-runs skip already-produced per-time files and resume the split of any already-downloaded
+     month. Per-request knobs: `product_type` (`"reanalysis"` for ERA5,
      `"analysis"` for CERRA), `use_area` (ERA5 supports lat/lon cropping to `Simulation.area`; CERRA's projected
      grid is pulled in full and cropped by WPS), and `extra_params` (e.g. CERRA's `data_type`/`level_type`).
      Area-cropped requests need `Simulation.area` (`BBox`), validated against the WRF domain (reprojected from the
