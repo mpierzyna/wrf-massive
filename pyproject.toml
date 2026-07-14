@@ -32,6 +32,9 @@ dependencies = [
     "xarray>=2026.4.0",
 ]
 
+[project.scripts]
+wrf-plot = "wrf_massive.plotting:cli"
+
 [tool.uv.sources]
 wrf-python = { git = "https://github.com/NCAR/wrf-python", tag = "v1.4.2" }
 
