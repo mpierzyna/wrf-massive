@@ -21,7 +21,10 @@ class CdsRequestSpec(pydantic.BaseModel):
     variables: List[str]
     levels: List[str] | None = None  # pressure levels; required for pressure-level datasets
     file_suffix: str  # combined with `PullCdsStage.prefix` for the output grib filename, e.g. "PRES", "SFC"
-    extra_params: Dict[str, Any] = {}  # dataset-specific overrides/additions (e.g. CERRA's `product_type`)
+    product_type: List[str] = ["reanalysis"]  # ERA5 uses "reanalysis"; CERRA uses "analysis"/"forecast"
+    use_area: bool = True  # add a lat/lon `area` crop to the request. Disable for datasets that do not support
+    # geographic subsetting (e.g. CERRA's projected grid) -- the full native domain is downloaded and WPS crops it.
+    extra_params: Dict[str, Any] = {}  # dataset-specific overrides/additions (e.g. CERRA's `data_type`)
 
 
 def _build_time_selectors(begin: pd.Timestamp, end: pd.Timestamp, freq: str = "3h") -> Dict[str, List[str]]:
@@ -49,6 +52,10 @@ class PullCdsStage(Stage):
 
     CDS credentials are resolved by `cdsapi.Client()` itself, using its own standard lookup (`~/.cdsapirc`, or
     the `CDSAPI_URL`/`CDSAPI_KEY` environment variables) -- nothing extra to configure here.
+
+    Per-request knobs on `CdsRequestSpec` cover the differences between datasets: `product_type` ("reanalysis"
+    for ERA5, "analysis" for CERRA), `use_area` (ERA5 supports lat/lon cropping; CERRA's projected grid is
+    downloaded in full and cropped by WPS), and `extra_params` for anything else a dataset requires.
     """
 
     prefix: str  # WPS ungrib prefix, must match Vtable/run_wps.sh/fg_name conventions (e.g. "CERRA", "ERA5")
@@ -60,9 +67,14 @@ class PullCdsStage(Stage):
         return self.get_work_dir(s) / f"{self.prefix}_{req.file_suffix}.grb"
 
     def _request_path(self, s: Simulation, req: CdsRequestSpec) -> pathlib.Path:
-        return self.get_work_dir(s) / f"cds_request_{req.file_suffix}.yaml"
+        # Prefix-scoped like `_grib_path`, so two stages sharing a work_dir (e.g. a CERRA and an ERA5 pull both
+        # writing into `1_forcing`) don't collide on their request sidecars when file suffixes overlap.
+        return self.get_work_dir(s) / f"cds_request_{self.prefix}_{req.file_suffix}.yaml"
 
     def _validate_area(self, s: Simulation):
+        # Only area-cropped requests need `Simulation.area`; full-domain requests (use_area=False) do not.
+        if not any(req.use_area for req in self.requests):
+            return
         if s.area is None:
             raise ValueError("Simulation.area must be set to use PullCdsStage (CDS requests need a lat/lon area).")
         if self.namelist_wps_path is not None:
@@ -71,12 +83,13 @@ class PullCdsStage(Stage):
 
     def _build_request(self, s: Simulation, req: CdsRequestSpec) -> Dict[str, Any]:
         request: Dict[str, Any] = {
-            "product_type": ["reanalysis"],
+            "product_type": req.product_type,
             "variable": req.variables,
             "data_format": "grib",
-            "area": [s.area.north, s.area.west, s.area.south, s.area.east],
             **_build_time_selectors(s.begin_w_warmup, s.end),
         }
+        if req.use_area:
+            request["area"] = [s.area.north, s.area.west, s.area.south, s.area.east]
         if req.levels is not None:
             request["pressure_level"] = req.levels
         request.update(req.extra_params)

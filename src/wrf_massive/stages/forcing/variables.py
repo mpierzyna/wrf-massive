@@ -4,16 +4,14 @@ The authoritative source for "what does WPS need" is the Vtable files linked in 
 - `stages/wps/Vtable.CERRA` (ships in this repo)
 - `Vtable.ERA-interim.pl` (ships with the WPS submodule, `ungrib/Variable_Tables/`, used unmodified for ERA5)
 
-ERA5 variable names below follow CDS's long-standing, stable `reanalysis-era5-pressure-levels` /
-`reanalysis-era5-single-levels` catalogue naming and are used with high confidence.
+The ERA5 and CERRA lists below match what `Vtable.CERRA` / `Vtable.ERA-interim.pl` consume and follow the
+CDS catalogue naming for their respective datasets.
 
-CERRA names could NOT be verified against the live CDS catalogue from this environment (outbound access to
-cds.climate.copernicus.eu is blocked here). In particular, CERRA's `reanalysis-cerra-single-levels` dataset may
-expose 10m wind as speed/direction (`10m_wind_speed`/`10m_wind_direction`) rather than u/v components -- while
-`Vtable.CERRA` expects u/v components (GRIB1 params 165/166, `UU`/`VV`). If that's the case for your CDS account,
-either request the component-wind variant if/when the catalogue offers one, or add a speed+direction -> u/v
-conversion step before ungrib. Double-check every CERRA variable/level string below against the CDS dataset's own
-"Download data" request-builder before relying on it.
+Note on CERRA 10m wind: `reanalysis-cerra-single-levels` provides 10m wind as speed + direction
+(`10m_wind_speed`/`10m_wind_direction`), not as u/v components, whereas `Vtable.CERRA` needs u/v (params
+165/166) and ungrib/metgrid cannot rotate speed/dir -> u/v. `CERRA_SINGLE_LEVEL_VARIABLES` therefore omits
+10m wind; source 10m u/v from ERA5 instead (`ERA5_SINGLE_LEVEL_VARIABLES`), which metgrid merges, or add a
+speed/dir -> u/v conversion step if native-resolution CERRA 10m wind is required.
 """
 
 from __future__ import annotations
@@ -93,7 +91,13 @@ ERA5_SINGLE_LEVEL_VARIABLES = [
 ]
 
 # CERRA ----------------------------------------------------------------------------------------------------------
-# NOTE: unverified against the live CDS catalogue -- see module docstring.
+
+# Pressure levels (hPa) available in `reanalysis-cerra-pressure-levels`.
+CERRA_PRESSURE_LEVELS = [
+    "1", "2", "3", "5", "7", "10", "20", "30", "50", "70",
+    "100", "150", "200", "250", "300", "400", "500", "600", "700", "750",
+    "800", "825", "850", "875", "900", "925", "950", "975", "1000",
+]  # fmt: skip
 
 CERRA_PRESSURE_LEVEL_VARIABLES = [
     "geopotential",
@@ -103,15 +107,16 @@ CERRA_PRESSURE_LEVEL_VARIABLES = [
     "v_component_of_wind",
 ]
 
+# 10m wind is intentionally excluded: CERRA archives it as speed/direction, which ungrib cannot turn into the
+# u/v components `Vtable.CERRA` expects -- source 10m u/v from ERA5 instead (see module docstring).
 CERRA_SINGLE_LEVEL_VARIABLES = [
-    "10m_wind_speed",  # VERIFY: Vtable.CERRA wants u/v components (params 165/166), not speed/direction
-    "10m_wind_direction",  # VERIFY: see above
     "2m_temperature",
     "2m_relative_humidity",
     "surface_pressure",
     "mean_sea_level_pressure",
     "skin_temperature",
-    "snow_depth",
     "land_sea_mask",
     "orography",
+    "snow_depth",  # physical snow depth (m); "SNOWH" in Vtable.CERRA
+    "snow_depth_water_equivalent",  # (kg m-2); "SNOW" in Vtable.CERRA
 ]

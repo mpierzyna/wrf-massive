@@ -38,7 +38,7 @@ def test_setup_writes_request_yaml(simulation_with_area):
     stage = make_stage()
     stage.setup(simulation_with_area)
 
-    request_path = stage.get_work_dir(simulation_with_area) / "cds_request_SFC.yaml"
+    request_path = stage.get_work_dir(simulation_with_area) / "cds_request_ERA5_SFC.yaml"
     assert request_path.exists()
     request = yaml.safe_load(request_path.read_text())
     assert request["variable"] == ["2m_temperature"]
@@ -88,7 +88,7 @@ def test_pressure_level_request_includes_levels(simulation_with_area):
         ],
     )
     stage.setup(simulation_with_area)
-    request = yaml.safe_load((stage.get_work_dir(simulation_with_area) / "cds_request_PRES.yaml").read_text())
+    request = yaml.safe_load((stage.get_work_dir(simulation_with_area) / "cds_request_ERA5_PRES.yaml").read_text())
     assert request["pressure_level"] == ["1000", "925"]
 
 
@@ -99,10 +99,91 @@ def test_extra_params_override_defaults(simulation_with_area):
                 dataset="reanalysis-cerra-single-levels",
                 variables=["2m_temperature"],
                 file_suffix="SFC",
-                extra_params={"product_type": ["analysis"]},
+                extra_params={"data_type": ["reanalysis"]},
             ),
         ],
     )
     stage.setup(simulation_with_area)
-    request = yaml.safe_load((stage.get_work_dir(simulation_with_area) / "cds_request_SFC.yaml").read_text())
+    request = yaml.safe_load((stage.get_work_dir(simulation_with_area) / "cds_request_ERA5_SFC.yaml").read_text())
+    assert request["data_type"] == ["reanalysis"]
+
+
+def test_product_type_field(simulation_with_area):
+    stage = make_stage(
+        requests=[
+            CdsRequestSpec(
+                dataset="reanalysis-cerra-single-levels",
+                variables=["2m_temperature"],
+                file_suffix="SFC",
+                product_type=["analysis"],
+            ),
+        ],
+    )
+    stage.setup(simulation_with_area)
+    request = yaml.safe_load((stage.get_work_dir(simulation_with_area) / "cds_request_ERA5_SFC.yaml").read_text())
     assert request["product_type"] == ["analysis"]
+
+
+def test_use_area_false_omits_area(simulation_with_area):
+    stage = make_stage(
+        requests=[
+            CdsRequestSpec(
+                dataset="reanalysis-cerra-single-levels",
+                variables=["2m_temperature"],
+                file_suffix="SFC",
+                use_area=False,
+            ),
+        ],
+    )
+    stage.setup(simulation_with_area)
+    request = yaml.safe_load((stage.get_work_dir(simulation_with_area) / "cds_request_ERA5_SFC.yaml").read_text())
+    assert "area" not in request
+
+
+def test_use_area_false_does_not_require_area(simple_simulation):
+    """A full-domain (use_area=False) request must not demand Simulation.area."""
+    stage = make_stage(
+        requests=[
+            CdsRequestSpec(
+                dataset="reanalysis-cerra-single-levels",
+                variables=["2m_temperature"],
+                file_suffix="SFC",
+                use_area=False,
+            ),
+        ],
+    )
+    stage.setup(simple_simulation)  # simple_simulation has no area; must not raise
+    assert stage.is_setup(simple_simulation)
+
+
+def test_shared_work_dir_requests_do_not_collide(simulation_with_area):
+    """Two stages sharing a work_dir with overlapping file suffixes must keep separate request sidecars."""
+    cerra = PullCdsStage(
+        work_dir="forcing",
+        prefix="CERRA",
+        requests=[
+            CdsRequestSpec(
+                dataset="reanalysis-cerra-single-levels",
+                variables=["2m_temperature"],
+                file_suffix="SFC",
+                product_type=["analysis"],
+                use_area=False,
+            ),
+        ],
+    )
+    era5 = PullCdsStage(
+        work_dir="forcing",
+        prefix="ERA5",
+        requests=[
+            CdsRequestSpec(dataset="reanalysis-era5-single-levels", variables=["skin_temperature"], file_suffix="SFC"),
+        ],
+    )
+    cerra.setup(simulation_with_area)
+    era5.setup(simulation_with_area)  # must not clobber the CERRA request written above
+
+    wd = cerra.get_work_dir(simulation_with_area)
+    cerra_req = yaml.safe_load((wd / "cds_request_CERRA_SFC.yaml").read_text())
+    era5_req = yaml.safe_load((wd / "cds_request_ERA5_SFC.yaml").read_text())
+    assert cerra_req["product_type"] == ["analysis"] and "area" not in cerra_req
+    assert era5_req["product_type"] == ["reanalysis"] and "area" in era5_req
+    assert cerra.is_setup(simulation_with_area) and era5.is_setup(simulation_with_area)
