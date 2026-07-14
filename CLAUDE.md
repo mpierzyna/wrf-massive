@@ -79,15 +79,17 @@ postproc).
    - `PullCdsStage` (`stages/forcing/cds.py`): downloads GRIB directly from the Copernicus Climate Data Store via
      the official `cdsapi` client — no pre-mirrored data needed. Takes a `prefix` (must match Vtable/`fg_name`,
      e.g. `"CERRA"`/`"ERA5"`) and a list of `CdsRequestSpec` (one per CDS dataset/variable-set, e.g. pressure-level
-     + single-level), each producing a `<prefix>_<file_suffix>.grb` file — matching `run_wps.sh`'s existing
-     `find $FORCING_DIR -name '<prefix>*.grb'` glob, so **no downstream WPS changes are needed**. CDS requests need
-     a lat/lon `area`; set it on `Simulation.area` (`BBox`) and it's validated against the WRF domain (reprojected
-     from the Lambert `namelist.wps` geogrid corners) via `stages/forcing/geo.py::validate_area_covers_domain`
-     before running. Variable/level lists per `(source, level_type)` live in `stages/forcing/variables.py` — ERA5
-     entries follow CDS's stable, long-standing catalogue naming; **CERRA entries are unverified** against the
-     live CDS catalogue (network access to `cds.climate.copernicus.eu` isn't available in all environments) and
-     are flagged in that module's docstring — double check them (especially whether CERRA's single-levels dataset
-     exposes 10m wind as u/v components vs. speed/direction) before relying on them.
+     + single-level). Each request is split into one CDS retrieve **per calendar month**, producing
+     `<prefix>_<file_suffix>_<YYYYMM>.grb` files — this keeps each request's year/month/day cross-product
+     waste-free across month boundaries, and re-runs skip already-downloaded months. Multiple files per source
+     match `run_wps.sh`'s `find $FORCING_DIR -name '<prefix>*.grb'` glob (concatenated by `link_grib.csh`), so
+     **no downstream WPS changes are needed**. Per-request knobs: `product_type` (`"reanalysis"` for ERA5,
+     `"analysis"` for CERRA), `use_area` (ERA5 supports lat/lon cropping to `Simulation.area`; CERRA's projected
+     grid is pulled in full and cropped by WPS), and `extra_params` (e.g. CERRA's `data_type`/`level_type`).
+     Area-cropped requests need `Simulation.area` (`BBox`), validated against the WRF domain (reprojected from the
+     Lambert `namelist.wps` geogrid corners) via `stages/forcing/geo.py::validate_area_covers_domain`.
+     Variable/level lists per `(source, level_type)` live in `stages/forcing/variables.py`. Note CERRA provides
+     10m wind only as speed/direction (not the u/v components `Vtable.CERRA` needs), so source 10m u/v from ERA5.
    - An ARCO/Zarr-based fast path (ECMWF's Analysis-Ready Cloud-Optimized stores) was investigated but not
      implemented: it returns Zarr/xarray, not GRIB, so it would need a hand-written bridge into WPS's binary
      "intermediate format" — judged too risky/novel for the initial pass. Revisit if a lower-latency alternative to
