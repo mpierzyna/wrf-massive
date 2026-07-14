@@ -13,6 +13,25 @@ logger = get_logger("stages.wrf")
 STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
 
 
+def is_wrf_successful(wrf_dir: pathlib.Path) -> bool:
+    """WRF finished cleanly if wrfout* files exist AND the rank-0 log reports success.
+
+    `wrfout*` alone is not enough: WRF writes the first history file early, so a run that crashes hours in
+    still leaves wrfout files behind. `run_wrf.sh` runs under mpirun, so success is confirmed via the
+    `SUCCESS COMPLETE WRF` line in `rsl.out.0000`/`rsl.error.0000`.
+    """
+    if not any(wrf_dir.glob("wrfout*")):
+        return False
+    for name in ("rsl.out.0000", "rsl.error.0000"):
+        log = wrf_dir / name
+        if not log.exists():
+            continue
+        with log.open("r", errors="ignore") as f:
+            if any("SUCCESS COMPLETE WRF" in line for line in f):
+                return True
+    return False
+
+
 def _get_time_dict(begin: datetime.datetime, end: datetime.datetime) -> Dict[str, str]:
     return {
         "time__start_year": f"{begin.year}",
@@ -82,11 +101,16 @@ class WRFStage(Stage):
 
     def run(self, s: Simulation):
         stage_dir = self.get_work_dir(s)
-        run_cmd_logged(["bash", "run_wrf.sh"], cwd=stage_dir, logger=logger, msg="running WRF")  # todo: ncpu
+        # Pass the MPI task count to run_wrf.sh via N_CPUS. Without it, a local (non-SLURM) run falls back to
+        # serial mode; under SLURM, SLURM_NTASKS still takes precedence inside the script.
+        env = None
+        if self.resources is not None:
+            env = {**os.environ, "N_CPUS": str(self.resources.n_tasks)}
+        run_cmd_logged(["bash", "run_wrf.sh"], cwd=stage_dir, logger=logger, msg="running WRF", env=env)
 
     def is_done(self, s: Simulation) -> bool:
-        """Successful if wrfout* files exist"""
-        return len(list(self.get_work_dir(s).glob("wrfout*"))) > 0
+        """Done only if WRF completed successfully (wrfout* present and rank-0 log reports success)."""
+        return is_wrf_successful(self.get_work_dir(s))
 
     def get_history_interval(self, domain: int, auxhist: int | None = None) -> datetime.timedelta:
         """Get output interval for `domain` (1-indexed!) from namelist.input"""

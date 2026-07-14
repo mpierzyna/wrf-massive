@@ -52,15 +52,17 @@ def run_cmd_logged(
     logger: logging.Logger,
     cwd: pathlib.Path | None = None,
     msg: str = "",
+    env: dict | None = None,
 ):
-    """Run a command in `cwd` and log errors"""
+    """Run a command in `cwd` and log errors. `env`, if given, replaces the subprocess environment
+    (pass a full mapping, e.g. `{**os.environ, "N_CPUS": "8"}`)."""
 
     # Make all paths absolute
     cmd = [str(c.absolute()) if isinstance(c, pathlib.Path) else c for c in cmd]
 
     # Run command
     logger.debug("-> Running " + " ".join(cmd) + f" in {cwd if cwd else '.'}...")
-    p = subprocess.run(cmd, check=False, stderr=subprocess.PIPE, text=True, cwd=cwd)
+    p = subprocess.run(cmd, check=False, stderr=subprocess.PIPE, text=True, cwd=cwd, env=env)
 
     # Check for errors and log them
     if p.returncode != 0:
