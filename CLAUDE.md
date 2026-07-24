@@ -14,6 +14,9 @@ use case).
 - Python: `>=3.12`.
 - `wrf-python` needs a working `gfortran`/gcc toolchain to build.
 - Formatting: `black` (line-length 120, see `pyproject.toml`); submodules are excluded from formatting.
+- `README.md` files (top-level, `src/wrf_massive/`, `workspaces/example/`) are user-facing: describe
+  what a feature does and how to use it, not the underlying implementation mechanics. Implementation
+  details belong here in `CLAUDE.md` instead.
 
 ## Repository layout
 

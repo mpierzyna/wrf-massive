@@ -46,9 +46,8 @@ To implement a new Stage, subclass `Stage` and implement the following abstract 
 `Resources` is a pydantic model with:
 - `n_tasks`, `cpus_per_task`, `mem_per_cpu`, and optional `walltime` (`datetime.timedelta`).
 - `cpus_total` is a convenience property computed as `n_tasks * cpus_per_task`.
-- `max_concurrent` (optional `int`) — caps the number of concurrently *running* SLURM jobs for this
-  stage, independent of CPU/core availability. Unset by default (no cap). Only meaningful for stages
-  submitted via the CLI's `submit` command; see "Submitting to SLURM" below for how it's enforced.
+- `max_concurrent` (optional `int`) — limits how many jobs for this stage are allowed to run at the
+  same time. Unset by default (no limit). See "Submitting to SLURM" below for when to use it.
 
 ### Pipeline
 - Construct a pipeline with named Stage instances: Pipeline(foo=StageA(...), bar=StageB(...)). 
@@ -57,30 +56,14 @@ To implement a new Stage, subclass `Stage` and implement the following abstract 
 - `run_stage` supports `force_setup` and `force_run` flags to re-run setup or run even when checks say done.
 
 ### Submitting to SLURM (`cli.py submit`)
-The CLI's `submit` command submits each requested stage of each simulation as its own `sbatch` job
-(`_submit_stage_slurm` in `cli.py`), chaining stage-to-stage dependencies within a simulation via
-`--dependency=afterok:<previous stage's job id>`. Each simulation is submitted independently, so
-different simulations' stages can run concurrently, bounded only by available cluster resources
-(`Resources.n_tasks`/`cpus_per_task`/`mem_per_cpu`).
+The CLI's `submit` command submits each requested stage of each simulation as its own SLURM job.
+Each simulation is submitted independently, so submitting many simulations at once can run many
+jobs for the same stage in parallel.
 
-That per-sim independence is deliberate but means a burst submission (many sim dirs at once) can
-start as many jobs for a stage as fit in free CPUs/memory — fine for CPU-bound stages, but not for
-e.g. a download stage hitting a rate-limited remote, or one you want to keep from flooding local
-disk. `Resources.max_concurrent` addresses this: when set, `_submit_stage_slurm` hashes each
-`sim_dir` (via `hashlib.md5`, so the mapping is stable across separate CLI invocations, unlike
-Python's randomized `hash()`) into one of `max_concurrent` "lanes". All jobs in the same lane share
-an identical `--job-name` and are submitted with `--dependency=singleton` — SLURM's mechanism that
-lets only one job with a given job-name/user run at a time — so at most `max_concurrent` jobs for
-that stage are ever running simultaneously, regardless of how many sims were submitted at once or
-how much CPU headroom exists. The `afterok` and `singleton` conditions are combined with a comma
-(SLURM ANDs comma-separated dependency conditions) when both apply.
-
-There's no cluster-wide equivalent of a job array's `--array=1-N%limit` for independently-submitted
-jobs, and this cluster has no SLURM accounting DB (`AccountingStorageType=none`), so QOS-based
-`MaxTRESPerUser` caps aren't available either — the singleton-lane trick is a workaround that needs
-no admin/config privileges, at the cost of the stage's `--job-name` becoming lane-based
-(`<stage>_lane<N>`) instead of per-sim in `squeue` output. Per-sim `sbatch` output logs
-(`<sim_dir>/slurm/<stage>_%A.out`) are unaffected and remain fully attributable.
+For stages that shouldn't have too many jobs running at the same time — for example, a download
+stage that would overwhelm a rate-limited remote server — set `max_concurrent` on that stage's
+`Resources`. This limits how many jobs for that stage are running at once, no matter how many
+simulations you submit together or how many CPUs are free.
 
 
 ### Helpers and conventions

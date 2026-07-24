@@ -110,18 +110,15 @@ uv run cli.py submit --stages wrf --jobfile slurm_hpc.sh --dep-job 12345 ./test_
 
 The jobfile passed to `submit` must be an executable sbatch script that invokes the package's run wrapper (i.e., a small script that calls the `wrf_massive` stage runner and uses the stage name and sim dir arguments). Example job scripts are provided in the directory.
 
-Each simulation is submitted independently, so `submit`-ing many simulations at once can start as
-many jobs for a given stage as fit in available cluster resources — fine for CPU-bound stages, but
-possibly not for e.g. a forcing-download stage hitting a rate-limited remote. Set
-`Resources.max_concurrent` on a stage in `pipeline.py` to cap how many jobs for that stage can be
-*running* at once, independent of CPU/core availability:
+Each simulation is submitted independently, so submitting many simulations at once can run many
+jobs for the same stage in parallel. If a stage shouldn't have too many jobs running at once — for
+example, a forcing-download stage that would overwhelm a rate-limited remote server — set
+`max_concurrent` on that stage's `Resources` in `pipeline.py` to limit how many jobs for that stage
+run at the same time:
 
 ```python
 cerra=Resources(n_tasks=1, cpus_per_task=4, mem_per_cpu="1G", max_concurrent=2)
 ```
-
-This is enforced via SLURM's `--dependency=singleton` mechanism rather than a job array, so it works
-with the per-simulation `submit` command shown above — no separate array-submission command needed.
 
 
 ## Quick Test Run
