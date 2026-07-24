@@ -40,7 +40,7 @@ fi
 # Process CERRA data, unless ungrib already completed successfully for it.
 if ! log_ok ungrib_CERRA.log; then
     rm -f GRIBFILE*  # delete potentially leftover GRIBFILES
-    find $FORCING_DIR -name 'CERRA*.grb' | xargs ./link_grib.csh  # link CERRA files
+    find $FORCING_DIR/ -name 'CERRA*.grb' | xargs ./link_grib.csh  # link CERRA files
     ln -sf Vtable.CERRA Vtable  # enable CERRA Vtable
     ln -sf namelist.wps.CERRA namelist.wps  # enable CERRA namelist
     ./ungrib.exe
@@ -51,7 +51,7 @@ fi
 # Process ERA5 data, unless ungrib already completed successfully for it.
 if ! log_ok ungrib_ERA5.log; then
     rm -f GRIBFILE*  # delete potentially leftover GRIBFILES
-    find $FORCING_DIR -name 'ERA5*.grb' | xargs ./link_grib.csh  # link ERA5 files
+    find $FORCING_DIR/ -name 'ERA5*.grb' | xargs ./link_grib.csh  # link ERA5 files
     ln -sf ungrib/Variable_Tables/Vtable.ERA-interim.pl Vtable  # enable ERA5 Vtable
     ln -sf namelist.wps.ERA5 namelist.wps  # enable ERA5 namelist
     ./ungrib.exe
