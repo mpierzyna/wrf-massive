@@ -61,6 +61,12 @@ class Resources(pydantic.BaseModel):
     cpus_per_task: int  # number of CPUs per task
     mem_per_cpu: str  # memory per CPU (e.g. "4G", "800M")
     walltime: datetime.timedelta | None = None  # maximum walltime
+    max_concurrent: int | None = pydantic.Field(default=None, gt=0)
+    # If set, caps the number of concurrently RUNNING jobs for this stage at this value,
+    # independent of available CPU/core headroom. Implemented via SLURM's
+    # `--dependency=singleton` (max concurrency 1 per unique --job-name/user), extended to N
+    # by hashing each sim_dir into one of N lanes sharing an identical --job-name (see
+    # `_submit_stage_slurm` in cli.py).
 
     @property
     def cpus_total(self) -> int:

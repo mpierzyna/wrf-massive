@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+import hashlib
 import logging
 from typing import Tuple
 
@@ -52,7 +54,6 @@ def get_pipeline_cli(p: Pipeline) -> click.Group:
         sim_dir: pathlib.Path,
         stage_name: str,
         jobfile: str,
-        array: str | None = None,
         dep_job_id: int | None = None,
     ) -> int:
         """Submit a single stage of a simulation to SLURM."""
@@ -63,12 +64,24 @@ def get_pipeline_cli(p: Pipeline) -> click.Group:
         slurm_dir: pathlib.Path = sim_dir / "slurm"
         slurm_dir.mkdir(exist_ok=True, parents=True)
 
+        # Determine job name, optionally overridden by a singleton-lane assignment. If
+        # `max_concurrent` is set on the stage's resources, jobs are hashed (deterministically,
+        # across separate CLI invocations) into one of `max_concurrent` lanes sharing an identical
+        # job name, and submitted with `--dependency=singleton` so SLURM never runs more than one
+        # job per lane at a time -- capping total concurrency for this stage independent of CPU
+        # headroom.
+        job_name = f"{sim_dir.name}_{stage_name}"
+        max_concurrent = stage.resources.max_concurrent
+        lane: int | None = None
+        if max_concurrent is not None:
+            lane = int(hashlib.md5(str(sim_dir).encode()).hexdigest(), 16) % max_concurrent
+            job_name = f"{stage_name}_lane{lane}"
+
         # Construct sbatch command
-        slurm_outfile_pattern = "%A_%a.out" if array is not None else "%A.out"
         sbatch_args = [
             "--parsable",  # return job id
-            f"--job-name={sim_dir.name}_{stage_name}",
-            f"--output={slurm_dir / f'{stage_name}_{slurm_outfile_pattern}'}",
+            f"--job-name={job_name}",
+            f"--output={slurm_dir / f'{stage_name}_%A.out'}",
             f"--ntasks={stage.resources.n_tasks}",
             f"--cpus-per-task={stage.resources.cpus_per_task}",
             f"--mem-per-cpu={stage.resources.mem_per_cpu}",
@@ -77,11 +90,15 @@ def get_pipeline_cli(p: Pipeline) -> click.Group:
             walltime = get_walltime_str(stage.resources.walltime)
             sbatch_args.append(f"--time={walltime}")
 
-        if array is not None:
-            sbatch_args.append(f"--array={array}")
-
+        # Combine afterok (stage-to-stage) and singleton (lane cap) dependencies; SLURM ANDs
+        # comma-separated dependency conditions.
+        dep_conditions = []
         if dep_job_id is not None:
-            sbatch_args.append(f"--dependency=afterok:{dep_job_id}")
+            dep_conditions.append(f"afterok:{dep_job_id}")
+        if lane is not None:
+            dep_conditions.append("singleton")
+        if dep_conditions:
+            sbatch_args.append(f"--dependency={','.join(dep_conditions)}")
 
         # Submit job
         cmd = [
@@ -104,7 +121,8 @@ def get_pipeline_cli(p: Pipeline) -> click.Group:
             raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, proc.stderr)
 
         job_id = int(proc.stdout.strip())
-        logger.info(f"Submitted job {job_id}{f' depending on {dep_job_id}' if dep_job_id else ''}.")
+        lane_msg = f" (lane {lane}/{max_concurrent})" if lane is not None else ""
+        logger.info(f"Submitted job {job_id}{f' depending on {dep_job_id}' if dep_job_id else ''}{lane_msg}.")
 
         return job_id
 
@@ -234,61 +252,5 @@ def get_pipeline_cli(p: Pipeline) -> click.Group:
                     dep_job_id=prev_job_id,
                 )
                 prev_job_id = job_id
-
-    @cli.command()
-    @click.option("--stages", "-s", type=str, required=False, default=None)
-    @click.option("--jobfile", "-j", type=click.Path(exists=True, dir_okay=False), required=True)
-    @click.option("--limit", "-l", type=int, required=False, default=4, help="Limit number of array tasks.")
-    @click.argument("sim_dirs", type=click.Path(exists=True, dir_okay=True), nargs=-1)
-    def submit_array(stages: str | None, jobfile: str, limit: int, sim_dirs: Tuple[str, ...]):
-        """Each stage will be submitted as an array of simulations.
-        Next stage will only start when all tasks of previous stage are done.
-        Use regular `submit` command and `--dep-job` option to chain other jobs to array.
-
-        Parameters
-        ----------
-        stages : str | None
-            Comma-separated list of stages to submit. If None, all stages will be submitted.
-            All simulations will be submitted as one array per stage.
-        jobfile : str
-            Path to job script to use for submission.
-        limit : int
-            Limit number of array tasks. Default: 4.
-        sim_dirs : Tuple[str, ...]
-            Simulation directories to submit. At least one must be provided.
-        """
-        if not sim_dirs:
-            raise click.UsageError("At least one simulation directory must be provided.")
-
-        stages = _parse_stages(stages)
-        stages = _validate_stages(stages, require_resources=True)
-
-        # Create file with list of simulations to process by array
-        sim_dirs = list(sim_dirs)
-        array_file = pathlib.Path(".array_sim_dirs")
-        if array_file.exists():
-            click.echo(f"Array file '{array_file}' with following content already exists: ")
-            click.echo(array_file.read_text())
-            click.confirm(f"Overwrite?", abort=True)
-
-        array_file.write_text("\n".join(sim_dirs))
-
-        # Line will be selected in jobscript using sed -n $SLURM_ARRAY_TASK_ID. Requires 1-based indexing.
-        array = f"1-{len(sim_dirs)}"
-        if limit is not None:
-            array += f"%{limit}"
-
-        # Submit each stage of each simulation with dependency on previous stage
-        prev_job_id = None
-        for stage_name in stages:
-            click.echo(f"Submitting stage '{stage_name}' as array for {len(sim_dirs)} simulations...")
-            job_id = _submit_stage_slurm(
-                sim_dir=pathlib.Path("."),
-                stage_name=stage_name,
-                jobfile=jobfile,
-                array=array,
-                dep_job_id=prev_job_id,
-            )
-            prev_job_id = job_id
 
     return cli

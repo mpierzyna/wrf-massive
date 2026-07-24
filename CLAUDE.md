@@ -21,7 +21,7 @@ use case).
 src/wrf_massive/        # generic, project-agnostic orchestration package
   base.py                # Stage / Simulation / Pipeline / Resources core abstractions
   config.py              # BaseYAMLConfig: pydantic <-> yaml (de)serialization helpers
-  cli.py                  # get_pipeline_cli(pipeline) -> click.Group (init_sims/run/submit/submit_array)
+  cli.py                  # get_pipeline_cli(pipeline) -> click.Group (init_sims/run/submit)
   log.py                  # logging helpers
   stages/
     forcing/              # download/prepare forcing data for WPS (currently: CERRA via rclone)
@@ -141,7 +141,6 @@ uv run cli.py init_sims simulations.py sim_test   # render sim_dir + namelists f
 uv run cli.py run ./test_1                        # run all stages locally
 uv run cli.py run --stages wps ./test_1           # run a subset of stages
 uv run cli.py submit --jobfile slurm_hpc.sh ./test_1              # submit each stage as its own sbatch job
-uv run cli.py submit_array --jobfile slurm_hpc.sh ./t1 ./t2 ...   # submit many sims as a SLURM array per stage
 ```
 
 Tests: `uv run pytest`. See `tests/fixtures.py` for the `StageA`/`StageB` test-double pattern and
