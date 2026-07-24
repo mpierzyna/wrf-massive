@@ -59,7 +59,12 @@ tests/                    # pytest; fixtures.py has StageA/StageB test doubles +
   `setup()` unless already `is_setup()`, then `run()` unless already `is_done()`. `Pipeline.run()` skips the whole
   simulation if `sim_dir/.done` exists.
 - **`Resources`**: `n_tasks`, `cpus_per_task`, `mem_per_cpu`, optional `walltime`; used by the CLI's SLURM
-  submission helpers to build `sbatch` args.
+  submission helpers to build `sbatch` args. Optional `max_concurrent: int` caps how many jobs for that
+  stage can be *running* at once across all simulations, independent of CPU/core headroom — enforced in
+  `cli.py`'s `_submit_stage_slurm` via SLURM's `--dependency=singleton`, hashing each sim_dir into one of
+  `max_concurrent` lanes that share a job name (so only one job per lane runs at a time). Useful for
+  stages that shouldn't run too many in parallel regardless of free CPUs (e.g. a download stage hitting a
+  rate-limited remote). Unset (`None`) by default — no cap, current `submit`-command behavior.
 - Path validators: `TPath` (coerce to `Path`), `TPathExists` (must already exist), `TPathMkdir` (created on
   validation if missing). Always use these for new `Stage` fields.
 
