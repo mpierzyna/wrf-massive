@@ -1,6 +1,7 @@
 # Git ignore for WPS dir
 *
 !.gitignore
+!.done
 !namelist.wps
 !namelist.wps.CERRA
 !namelist.wps.ERA5

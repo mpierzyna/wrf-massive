@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import shutil
 
 import pandas as pd
 
-from wrf_massive.base import Stage, Simulation, TPathExists
+from wrf_massive.base import Simulation, Stage, TPathExists
 from wrf_massive.log import get_logger
 from wrf_massive.stages.utils import render_template, run_cmd_logged
 
@@ -100,6 +101,9 @@ class PullCerraStage(Stage):
         df_inc = df_inc.melt(value_name="path")
         (work_dir / "includes.txt").write_text("\n".join(df_inc["path"].to_list()))
         logger.info(f"-> rclone include file with {len(df_inc)} entries written to includes.txt.")
+
+        # Copy gitignore
+        shutil.copy(STAGE_DIR / "gitignore", work_dir / ".gitignore")
 
     def is_setup(self, s: Simulation) -> bool:
         """Assume setup is done when rclone script and `includes.txt` exist."""
