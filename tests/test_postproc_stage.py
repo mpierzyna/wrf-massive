@@ -2,12 +2,13 @@ import pytest
 import xarray as xr
 from fixtures import WRFOUT_DIR, simple_simulation
 
-from wrf_massive.base import Simulation
+from wrf_massive.base import Resources, Simulation
 from wrf_massive.stages.postproc import PostProcStage
-from wrf_massive.stages.postproc.cn2 import get_ct2_cn2_fn
+from wrf_massive.stages.postproc.cn2 import fn_ct2_cn2
 
 
-def test_w(simple_simulation: Simulation, tmp_path):
+@pytest.mark.parametrize("run_parallel", [False, True])
+def test_w(simple_simulation: Simulation, tmp_path, run_parallel):
     """Test that wa (wrfout) gets renamed to w using postprocessing functions."""
     pp = PostProcStage(
         work_dir=tmp_path,
@@ -15,8 +16,9 @@ def test_w(simple_simulation: Simulation, tmp_path):
         domain=1,
         extract_vars=["w"],
         compression=False,  # for testing
-        run_parallel=False,  # for testing
+        run_parallel=run_parallel,
         discard_warmup=False,  # for testing
+        resources=Resources(n_tasks=2, cpus_per_task=1, mem_per_cpu="1G"),
     )
 
     # Check that w gets moved to postproc functions
@@ -31,16 +33,18 @@ def test_w(simple_simulation: Simulation, tmp_path):
     assert "w" in ds.data_vars
 
 
-def test_uv(simple_simulation: Simulation, tmp_path):
+@pytest.mark.parametrize("run_parallel", [False, True])
+def test_uv(simple_simulation: Simulation, tmp_path, run_parallel):
     """Test that uvmet variable (wrfout) gets split into individual u_met and v_met."""
     pp = PostProcStage(
         work_dir=tmp_path,
         wrfout_dir=WRFOUT_DIR,
         domain=1,
         extract_vars=["u_met", "v_met"],
+        run_parallel=run_parallel,
         compression=False,  # for testing
-        run_parallel=False,  # for testing
         discard_warmup=False,  # for testing
+        resources=Resources(n_tasks=2, cpus_per_task=1, mem_per_cpu="1G"),
     )
 
     # Check that u_met and v_met get moved to postproc functions
@@ -59,17 +63,19 @@ def test_uv(simple_simulation: Simulation, tmp_path):
     assert "u_v" not in ds.dims
 
 
-def test_cn2(simple_simulation: Simulation, tmp_path):
+@pytest.mark.parametrize("run_parallel", [False, True])
+def test_cn2(simple_simulation: Simulation, tmp_path, run_parallel):
     """Test that CT2 and Cn2 variables are calculated correctly with injected dependencies."""
     pp = PostProcStage(
         work_dir=tmp_path,
         wrfout_dir=WRFOUT_DIR,
         domain=1,
         extract_vars=[],  # leave this empty, work only with dependencies
-        postproc_fns=[get_ct2_cn2_fn()],
+        postproc_fns=[fn_ct2_cn2],
         compression=False,  # for testing
-        run_parallel=False,  # for testing
+        run_parallel=run_parallel,  # for testing
         discard_warmup=False,  # for testing
+        resources=Resources(n_tasks=2, cpus_per_task=1, mem_per_cpu="1G"),
     )
 
     # Run stage

@@ -84,6 +84,30 @@ class PostProcFn(pydantic.BaseModel):
         return self.fn(ds)
 
 
+def _w_rename_fn(ds: xr.Dataset) -> Dict[str, xr.DataArray]:
+    """Rename wa to w."""
+    return {"w": ds["wa"]}
+
+
+fn_w_rename = PostProcFn(
+    requires=["wa"],
+    returns=["w"],
+    fn=_w_rename_fn,
+)
+
+
+def _split_uvmet(ds: xr.Dataset) -> Dict[str, xr.DataArray]:
+    """Split uvmet into u_met and v_met."""
+    return {"u_met": ds["uvmet"][0], "v_met": ds["uvmet"][1]}
+
+
+fn_uv_split = PostProcFn(
+    requires=["uvmet"],
+    returns=["u_met", "v_met"],
+    fn=_split_uvmet,
+)
+
+
 class PostProcStage(Stage):
     """Post-processing stage for wrfout files. Extracts variables and applies post-processing functions."""
 
@@ -130,18 +154,12 @@ class PostProcStage(Stage):
 
         # in wrfout, w=wa, but we want it as w
         if "w" in obj.extract_vars:
-            fns.append(PostProcFn(requires=["wa"], returns=["w"], fn=lambda ds: {"w": ds["wa"]}))
+            fns.append(fn_w_rename)
             obj.extract_vars.remove("w")  # will be added by postproc function, so remove from extract_vars
 
         # wrf.getvar() returns u_met and v_met in one variable, so we need to add a postproc function to split them
         if "u_met" in obj.extract_vars or "v_met" in obj.extract_vars:
-            fns.append(
-                PostProcFn(
-                    requires=["uvmet"],
-                    returns=["u_met", "v_met"],
-                    fn=lambda ds: {"u_met": ds["uvmet"][0], "v_met": ds["uvmet"][1]},
-                )
-            )
+            fns.append(fn_uv_split)
             if "u_met" in obj.extract_vars:
                 obj.extract_vars.remove("u_met")
             if "v_met" in obj.extract_vars:

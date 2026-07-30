@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import xarray as xr
 
-from wrf_massive.stages.postproc.base import PostProcFn
+from wrf_massive.stages.postproc import PostProcFn, PostProcStage
+from wrf_massive.stages.postproc.base import TVarList
 
 
-def get_ct2_hb15(*, var_theta, Lm):
+def _get_ct2_hb15(*, var_theta, Lm):
     """Variance-based CT2 parameterization from He and Basu (2015).
 
     Parameters
@@ -34,32 +35,66 @@ def get_ct2_hb15(*, var_theta, Lm):
     return ct2
 
 
-def gladstone_cn2_simple(*, ct2, p_hPa, t_K):
+def _gladstone_cn2_simple(*, ct2, p_hPa, t_K):
     """Simplified Gladstone equation without humidity correction."""
     cn2 = (7.9e-5 * p_hPa / t_K**2) ** 2 * ct2
     return cn2
 
 
-def get_ct2_cn2_fn() -> PostProcFn:
-    """Return a PostProcFn that calculates CT2 and Cn2 from TSQ, EL_PBL, p, and tk."""
+def _get_ct2_cn2(ds: xr.Dataset) -> Dict[str, xr.DataArray]:
+    """Calculate CT2 and Cn2 from dataset containing TSQ, EL_PBL, p, and tk."""
+    ct2 = _get_ct2_hb15(var_theta=ds["TSQ"], Lm=ds["EL_PBL"])
+    ct2.name = "ct2"
+    ct2.attrs = {"units": "K^2 m^(-2/3)", "long_name": "CT2, parameterized acc. to He and Basu (2015)"}
 
-    def _fn(ds: xr.Dataset) -> Dict[str, xr.DataArray]:
-        """Calculate CT2 and Cn2 from dataset containing TSQ, EL_PBL, p, and tk."""
-        ct2 = get_ct2_hb15(var_theta=ds["TSQ"], Lm=ds["EL_PBL"])
-        ct2.name = "ct2"
-        ct2.attrs = {"units": "K^2 m^(-2/3)", "long_name": "CT2, parameterized acc. to He and Basu (2015)"}
+    cn2 = _gladstone_cn2_simple(ct2=ct2, p_hPa=ds["p"] / 100, t_K=ds["tk"])
+    cn2.name = "cn2"
+    cn2.attrs = {"units": "m^(-2/3)", "long_name": "Cn2 from CT2 and Gladstone eqn."}
 
-        cn2 = gladstone_cn2_simple(ct2=ct2, p_hPa=ds["p"] / 100, t_K=ds["tk"])
-        cn2.name = "cn2"
-        cn2.attrs = {"units": "m^(-2/3)", "long_name": "Cn2 from CT2 and Gladstone eqn."}
+    return {
+        "ct2": ct2,
+        "cn2": cn2,
+    }
 
-        return {
-            "ct2": ct2,
-            "cn2": cn2,
-        }
 
-    return PostProcFn(
-        fn=_fn,
-        requires=["TSQ", ("EL_PBL", "bottom_top_stag"), "p", "tk"],
-        returns=["ct2", "cn2"],
-    )
+fn_ct2_cn2 = PostProcFn(
+    fn=_get_ct2_cn2,
+    requires=["TSQ", ("EL_PBL", "bottom_top_stag"), "p", "tk"],
+    returns=["ct2", "cn2"],
+)
+
+
+class Cn2PostProcStage(PostProcStage):
+    """Post-processing stage for typical CT2/Cn2 postprocessing."""
+
+    extract_vars: TVarList = [
+        "z",
+        "HGT",
+        "p",
+        "u_met",
+        "v_met",
+        "w",
+        "th",  # potential temperature
+        # "tk",
+        "rh",
+        "PBLH",
+        "LANDMASK",
+        "mdbz",  # maximum reflectivity
+        "slp",
+        "T2",
+        # "TH2",
+        "U10",
+        "V10",
+        "LH",
+        "HFX",
+        "UST",
+        # "ZNT",
+        # "Z0",
+        "QKE",
+        ("EL_PBL", "bottom_top_stag"),
+        "TSQ",
+    ]
+
+    postproc_fns: List[PostProcFn] = [
+        fn_ct2_cn2,
+    ]
