@@ -1,1 +1,1 @@
-from .cn2 import PostProcStage
+from .base import PostProcFn, PostProcStage
