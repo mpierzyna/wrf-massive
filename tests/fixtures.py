@@ -1,5 +1,11 @@
+import pathlib
+
 import pytest
-from wrf_massive.base import Stage, Simulation
+
+from wrf_massive.base import Simulation, Stage
+
+TEST_ROOT = pathlib.Path(__file__).parent
+WRFOUT_DIR = TEST_ROOT / "wrfout"
 
 
 class StageA(Stage):
@@ -41,3 +47,4 @@ class StageB(Stage):
 @pytest.fixture()
 def simple_simulation(tmp_path) -> Simulation:
     return Simulation(sim_dir=tmp_path, settings={}, warmup_h=12, begin="2025-01-01", end="2025-01-02")
+

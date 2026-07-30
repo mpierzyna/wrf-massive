@@ -2,20 +2,28 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
-import os
 import datetime
-import pydantic
+import os
 import pathlib
-from typing import List, Tuple
-import numpy as np
+import re
 import shutil
+from typing import Callable, Dict, List, Self, Tuple
+
+import netCDF4
+import numpy as np
+import pydantic
+import wrf
+import xarray as xr
 
 from wrf_massive.base import Simulation, Stage, TPath
 from wrf_massive.log import get_logger
-from wrf_massive.stages.postproc.utils import load_wrfout
 
-logger = get_logger("stages.postproc.cn2")
+logger = get_logger("stages.postproc")
 STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
+
+# Type alias for list of variable names to extract from wrfout files.
+# If tuple, first element is variable name, second element is dimension along which to destagger.
+TVarList = List[str | Tuple[str, str]]
 
 
 def get_ct2_hb15(*, var_theta, Lm):
@@ -50,29 +58,134 @@ def gladstone_cn2_simple(*, ct2, p_hPa, t_K):
     return cn2
 
 
-class PostprocCn2Stage(Stage):
+def load_wrfout(f: pathlib.Path | str, vars_to_extract: TVarList) -> xr.Dataset:
+    wrf_file = netCDF4.Dataset(f)
+
+    # Start actual extraction
+    res = {}
+    for v in vars_to_extract:
+        # Optionally: Extract dimension along which data will be destaggered
+        if isinstance(v, tuple):
+            v, destagger_dim = v
+        else:
+            destagger_dim = None
+
+        # Get variable for all timesteps (ATTENTION! This is heavy on memory!)
+        logger.info(f"Reading {v}... ")
+        v_data = wrf.getvar(wrf_file, v, timeidx=wrf.ALL_TIMES)
+
+        # Now destagger
+        if destagger_dim:
+            destagger_dim_ind = v_data.dims.index(destagger_dim)
+            logger.info(f"Destaggering along {destagger_dim} ({destagger_dim_ind})... ")
+            v_data = wrf.destagger(v_data, destagger_dim_ind, meta=True)
+
+        # Serialise object attributes for later netcdf storage
+        v_data.attrs["projection"] = v_data.attrs["projection"].proj4()
+        v_data = v_data.drop_vars("latlon_coord", errors="ignore")
+
+        # Store it. Maybe write to output file directly to release RAM
+        assert v not in res, f"Variable {v} already in results!"  # this shouldn't happen
+        res[v] = v_data
+        logger.info("Done!")
+
+    # Collect everything into a single dataset
+    res_ds = xr.Dataset(res)
+    res_ds = res_ds.drop_vars("latlon_coord", errors="ignore")
+
+    # Copy attributes from original file
+    for attr in wrf_file.ncattrs():
+        res_ds.attrs[attr] = wrf_file.getncattr(attr)
+
+    # Rename time
+    res_ds = res_ds.rename({"Time": "time"})
+
+    return res_ds
+
+
+class PostProcFn(pydantic.BaseModel):
+    """Post-processing function with metadata about required variables and output variable names."""
+
+    fn: Callable[[xr.Dataset], Dict[str, xr.DataArray]]
+    returns: List[str]
+    requires: TVarList = []
+
+    def __call__(self, ds: xr.Dataset) -> Dict[str, xr.DataArray]:
+        """Take the current state of postproc dataset and return a dict of new variables to add to the dataset."""
+        return self.fn(ds)
+
+
+class PostProcStage(Stage):
     wrfout_dir: TPath  # directory with wrfout files (relative to sim_dir)
     domain: int  # domain to process, e.g. 1 for d01 (1-indexed!)
-    extract_vars: List[str | Tuple[str, str]]  # variables to extract from wrfout files
+
+    # Variables to extract from wrfout files using wrf-python.
+    # ALL-CAPS vars taken from wrfout directly, lower-case vars are processed by wrf.getvar()
+    extract_vars: TVarList
+
+    # List of post-processing functions and their required variables
+    # Each entry is a tuple of (function_name, function_callable, optional list_of_required_vars).
+    # Postproc function takes postproc dataset and returns dict of new variables to add to dataset.
+    postproc_fns: List[PostProcFn] = []
+
     compression: bool
     run_parallel: bool = False  # whether to run in parallel using multiprocessing
+    file_suffix: str = "proc"  # appended to wrfout filenames to indicate post-processed files
+    discard_warmup: bool = True  # whether to discard wrfout files from warmup period (default: True)
 
     @pydantic.field_validator("extract_vars", mode="after")
-    def ensure_defaults(cls, extract_vars: List[str]) -> List[str]:
+    def ensure_defaults(cls, extract_vars: TVarList) -> TVarList:
         """Ensure reasonable defaults like pressure level height and terrain height are included."""
         defaults = ["z", "HGT", "p"]
         for v in defaults:
             if v not in extract_vars:
                 extract_vars.append(v)
-                logger.warning(f"Added variable '{v}' as reasonable aux variable for Cn2 computation.")
+                logger.warning(f"Added variable '{v}' as reasonable aux variable.")
+
+        # Make sure we have full wind vector if one component is requested.
+        if "u_met" in extract_vars and "v_met" not in extract_vars:
+            extract_vars.append("v_met")
+            logger.warning("Adding 'v_met' because 'u_met' is requested.")
+        if "v_met" in extract_vars and "u_met" not in extract_vars:
+            extract_vars.append("u_met")
+            logger.warning("Adding 'u_met' because 'v_met' is requested.")
+
         return extract_vars
 
-    def get_inputs(self, s: Simulation, discard_warmup: bool = True) -> List[pathlib.Path]:
+    @pydantic.model_validator(mode="after")
+    @classmethod
+    def set_default_postproc_fns(cls, obj: Self) -> Self:
+        fns = []
+
+        # in wrfout, w=wa, but we want it as w
+        if "w" in obj.extract_vars:
+            fns.append(PostProcFn(requires=["wa"], returns=["w"], fn=lambda ds: {"w": ds["wa"]}))
+            obj.extract_vars.remove("w")  # will be added by postproc function, so remove from extract_vars
+
+        # wrf.getvar() returns u_met and v_met in one variable, so we need to add a postproc function to split them
+        if "u_met" in obj.extract_vars or "v_met" in obj.extract_vars:
+            fns.append(
+                PostProcFn(
+                    requires=["uvmet"],
+                    returns=["u_met", "v_met"],
+                    fn=lambda ds: {"u_met": ds["uvmet"][0], "v_met": ds["uvmet"][1]},
+                )
+            )
+            if "u_met" in obj.extract_vars:
+                obj.extract_vars.remove("u_met")
+            if "v_met" in obj.extract_vars:
+                obj.extract_vars.remove("v_met")
+
+        # Add default postproc fns to the top, so downstream fns can depend on them
+        obj.postproc_fns = [*fns, *obj.postproc_fns]
+
+    def get_inputs(self, s: Simulation) -> List[pathlib.Path]:
         """Get wrfout files for post-processing. Discard files from warmup period by default."""
         fname_base = f"wrfout_aux_d{self.domain:02d}_"
+        re_date = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}:\d{2}:\d{2}")
 
         def _parse_fname(fname: str) -> datetime.datetime:
-            fname_date = fname.replace(fname_base, "")
+            fname_date = re_date.search(fname).group(0)
             fname_date = datetime.datetime.strptime(fname_date, "%Y-%m-%d_%H:%M:%S")
             return fname_date
 
@@ -84,7 +197,7 @@ class PostprocCn2Stage(Stage):
                 f"No wrfout files found in {s.sim_dir / self.wrfout_dir} with pattern '{fname_base}*'."
             )
 
-        if discard_warmup:
+        if self.discard_warmup:
             inputs_filtered = []
             inputs_begin = [_parse_fname(f.name) for f in inputs]
             inputs_begin = list(zip(inputs, inputs_begin))  # (fname, begin)
@@ -151,43 +264,36 @@ class PostprocCn2Stage(Stage):
     def run_single(self, s: Simulation, i_f: int | pathlib.Path):
         f = self.get_inputs(s)[i_f] if isinstance(i_f, int) else i_f
         f_out = (
-            self.get_work_dir(s) / f"{f.name.replace(':', '-')}_cn2.nc"
-        )  # replace `:` to avoid with tudelft project drive
+            self.get_work_dir(s) / f"{f.name.replace(':', '-')}_{self.file_suffix}.nc"
+        )  # replace `:` to avoid problems with windows storage
 
         if f_out.exists():
             logger.info(f"Output file {f_out} already exists. Skipping.")
             return
 
-        # We need some vars for Cn2 computation. Add them temporarily if not requested.
+        # Collect dependency variables from postproc_fns
         extract_vars = copy.deepcopy(self.extract_vars)
-        required_vars = ["TSQ", ("EL_PBL", "bottom_top_stag"), "p", "tk"]
-        for rv in required_vars:
-            if rv not in extract_vars:
-                extract_vars.append(rv)
+        for fn in self.postproc_fns:
+            # Add required variables to extract_vars if not already present
+            for v in fn.requires:
+                if v not in extract_vars:
+                    extract_vars.append(v)
 
         # Load wrfout file
         logger.info(f"Post-processing {f.name}...")
-        ds = load_wrfout(f, vars_to_extract=extract_vars, dt_warmup=None)  # warmup already discarded on file-level
+        ds = load_wrfout(f, vars_to_extract=extract_vars)
 
-        # Calculate Cn2 and Ct2
-        ct2 = get_ct2_hb15(var_theta=ds["TSQ"], Lm=ds["EL_PBL"])
-        cn2 = gladstone_cn2_simple(ct2=ct2, p_hPa=ds["p"] / 100, t_K=ds["tk"])
-        ds["ct2"] = ct2
-        ds["cn2"] = cn2
+        # Apply postproc functions
+        for fn in self.postproc_fns:
+            logger.info(f"Applying post-processing function for {fn.returns}...")
+            new_vars = fn(ds)
+            for name, data in new_vars.items():
+                ds[name] = data
 
-        # Select only requested variables (including Cn2 and Ct2)
+        # Select only vars requested explicitly OR from postproc
         extract_vars = [v[0] if isinstance(v, tuple) else v for v in self.extract_vars]  # remove destagger dim
-        extract_vars += ["ct2", "cn2"]
-
-        # Ugly special cases
-        if "uvmet" in extract_vars:
-            extract_vars.remove("uvmet")
-            extract_vars.append("u_met")
-            extract_vars.append("v_met")
-        if "wa" in extract_vars:
-            extract_vars.remove("wa")
-            extract_vars.append("w")
-
+        for fn in self.postproc_fns:
+            extract_vars.extend(fn.returns)
         ds = ds[extract_vars]
 
         # Log diagnostics
@@ -210,3 +316,19 @@ class PostprocCn2Stage(Stage):
             return False
         n_done = len(list(self.get_work_dir(s).glob("wrfout_*.nc")))
         return n_done == n_expected
+
+
+def get_ct2_cn2_fn() -> PostProcFn:
+    """Return a PostProcFn that calculates CT2 and Cn2 from TSQ, EL_PBL, p, and tk."""
+
+    def _fn(ds: xr.Dataset) -> Dict[str, xr.DataArray]:
+        """Calculate CT2 and Cn2 from dataset containing TSQ, EL_PBL, p, and tk."""
+        ct2 = get_ct2_hb15(var_theta=ds["TSQ"], Lm=ds["EL_PBL"])
+        cn2 = gladstone_cn2_simple(ct2=ct2, p_hPa=ds["p"] / 100, t_K=ds["tk"])
+        return {"ct2": ct2, "cn2": cn2}
+
+    return PostProcFn(
+        fn=_fn,
+        requires=["TSQ", "EL_PBL", "p", "tk"],
+        returns=["ct2", "cn2"],
+    )

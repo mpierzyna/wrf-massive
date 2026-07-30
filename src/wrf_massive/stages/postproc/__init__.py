@@ -1,1 +1,1 @@
-from .cn2 import PostprocCn2Stage
+from .cn2 import PostProcStage
