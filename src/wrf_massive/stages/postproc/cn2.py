@@ -7,6 +7,7 @@ import xarray as xr
 
 from wrf_massive.stages.postproc import PostProcFn, PostProcStage
 from wrf_massive.stages.postproc.base import TVarList
+from wrf_massive.stages.postproc.precip import fn_int_water_paths
 
 
 def _get_ct2_hb15(*, var_theta, Lm):
@@ -97,4 +98,7 @@ class Cn2PostProcStage(PostProcStage):
 
     postproc_fns: List[PostProcFn] = [
         fn_ct2_cn2,
+        fn_int_water_paths,
     ]
+
+    file_suffix: str = "cn2"

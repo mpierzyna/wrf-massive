@@ -167,6 +167,7 @@ class PostProcStage(Stage):
 
         # Add default postproc fns to the top, so downstream fns can depend on them
         obj.postproc_fns = [*fns, *obj.postproc_fns]
+        return obj
 
     def get_inputs(self, s: Simulation) -> List[pathlib.Path]:
         """Get wrfout files for post-processing. Discard files from warmup period by default."""
@@ -215,9 +216,10 @@ class PostProcStage(Stage):
                     inputs_filtered.append(a_path)
                     inputs_filtered.append(b_path)
                 else:
-                    # Either both before begin or both after begin...
+                    # Either both before begin or both after begin. Keep only if AT begin or after
+                    if a_begin >= s.begin:
+                        inputs_filtered.append(a_path)
                     if b_begin >= s.begin:
-                        # ... keep b if after or exactly begin.
                         inputs_filtered.append(b_path)
 
             return inputs_filtered
@@ -303,5 +305,5 @@ class PostProcStage(Stage):
         except FileNotFoundError:
             # No inputs found -> not done
             return False
-        n_done = len(list(self.get_work_dir(s).glob("wrfout_*.nc")))
+        n_done = len(list(self.get_work_dir(s).glob(f"wrfout_*{self.file_suffix}.nc")))
         return n_done == n_expected
