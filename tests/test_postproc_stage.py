@@ -1,12 +1,16 @@
 import datetime
+import warnings
 
+import numpy as np
+import pydantic
 import pytest
 import xarray as xr
 from fixtures import WRFOUT_DIR, simple_simulation
 
 from wrf_massive.base import Resources, Simulation
 from wrf_massive.stages.postproc import PostProcStage
-from wrf_massive.stages.postproc.cn2 import fn_ct2_cn2
+from wrf_massive.stages.postproc.base import TVarList, load_wrfout
+from wrf_massive.stages.postproc.cn2 import Cn2PostProcStage, fn_ct2_cn2
 
 
 def _make_warmup_stage(tmp_path, begin: str, first_file: str, n_files: int = 6, freq_h: int = 6) -> tuple:
@@ -153,3 +157,106 @@ def test_cn2(simple_simulation: Simulation, tmp_path, run_parallel):
     ds = xr.open_mfdataset(list(sorted(pp.work_dir.glob(f"*{pp.file_suffix}.nc"))))
     assert "cn2" in ds.data_vars
     assert "ct2" in ds.data_vars
+
+
+def _make_cn2_stage(tmp_path, **kwargs) -> tuple:
+    """Cn2 stage over the test wrfout fixture, plus a matching simulation."""
+    s = Simulation(
+        sim_dir=WRFOUT_DIR.parent, settings={}, warmup_h=12, begin="2017-01-02T12:00:00", end="2017-01-03"
+    )
+    pp = Cn2PostProcStage(
+        work_dir=tmp_path,
+        wrfout_dir=WRFOUT_DIR.name,
+        domain=1,
+        compression=False,  # for testing
+        resources=Resources(n_tasks=1, cpus_per_task=1, mem_per_cpu="1G"),
+        **kwargs,
+    )
+    return pp, s
+
+
+def test_fill_values_normalized():
+    """wrf-python stamps _FillValue/missing_value on some vars, which must not survive into the dataset."""
+    ds = load_wrfout(sorted(WRFOUT_DIR.glob("wrfout_aux_d01_*"))[0], ["p", "tk", "PH"])
+    for v in ds.variables:
+        assert "_FillValue" not in ds[v].attrs, f"{v} still carries _FillValue"
+        assert "missing_value" not in ds[v].attrs, f"{v} still carries missing_value"
+
+
+def test_written_file_reads_without_warning(tmp_path):
+    """Conflicting fill values used to raise a SerializationWarning on every read of the output."""
+    pp, s = _make_cn2_stage(tmp_path)
+    pp.run(s)
+
+    f_out = sorted(tmp_path.glob(f"*{pp.file_suffix}.nc"))[0]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        xr.open_dataset(f_out).load()
+
+    serialization = [w for w in caught if issubclass(w.category, xr.SerializationWarning)]
+    assert not serialization, [str(w.message) for w in serialization]
+
+
+@pytest.mark.parametrize("single_precision", [True, False])
+def test_single_precision(tmp_path, single_precision):
+    """wrf-python returns z/w/u_met/v_met/slp as float64; they should be stored as float32 by default."""
+    pp, s = _make_cn2_stage(tmp_path, single_precision=single_precision)
+    pp.run(s)
+
+    ds = xr.open_dataset(sorted(tmp_path.glob(f"*{pp.file_suffix}.nc"))[0])
+    f64 = sorted(v for v in ds.data_vars if ds[v].dtype == np.float64)
+    if single_precision:
+        assert not f64, f"expected no float64 data vars, got {f64}"
+    else:
+        assert "z" in f64 and "w" in f64  # unchanged wrf-python dtypes
+
+    # Cn2 spans very small magnitudes (1e-22..1e-13), far above the float32 subnormal limit -> no underflow
+    assert ds["cn2"].dtype == np.float32
+    cn2 = ds["cn2"].values
+    assert np.all(np.isfinite(cn2))
+    assert cn2.max() > 0
+
+
+def test_parallel_requires_resources(tmp_path):
+    """Parallel runs take the worker count from `resources`, so building one without must fail loudly."""
+    kwargs = dict(work_dir=tmp_path, wrfout_dir="x", domain=1, extract_vars=[], compression=False)
+
+    with pytest.raises(pydantic.ValidationError, match="run_parallel"):
+        PostProcStage(**kwargs, run_parallel=True)
+
+    PostProcStage(**kwargs)  # serial runs need no resources
+
+    # Must also catch subclasses that turn parallelism on via a class default (a field validator would not)
+    class _ParallelByDefault(PostProcStage):
+        run_parallel: bool = True
+
+    with pytest.raises(pydantic.ValidationError, match="run_parallel"):
+        _ParallelByDefault(**kwargs)
+
+
+@pytest.mark.parametrize("run_parallel", [False, True])
+def test_failure_names_input_file(tmp_path, run_parallel):
+    """A failing file must be identifiable from the error, also when it fails inside a worker process."""
+    pp, s = _make_cn2_stage(tmp_path, extract_vars=["NOT_A_WRF_VARIABLE"], run_parallel=run_parallel)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        pp.run(s)
+
+    assert "wrfout_aux_d01_2017-01-02_12:00:00.nc" in str(excinfo.value) + str(excinfo.value.__cause__)
+
+
+def test_defaults_applied_to_subclass_class_defaults():
+    """`extract_vars` defaults of a subclass are never seen by field validators -> must be model validators."""
+
+    class _MinimalStage(PostProcStage):
+        extract_vars: TVarList = ["th"]  # missing z/HGT/p
+
+    pp = _MinimalStage(work_dir="/tmp", wrfout_dir="x", domain=1, compression=False)
+    for v in ["z", "HGT", "p"]:
+        assert v in pp.extract_vars
+
+    # Explicitly passed values must keep working the same way (this is what the field validator used to cover)
+    pp = PostProcStage(work_dir="/tmp", wrfout_dir="x", domain=1, compression=False, extract_vars=["u_met"])
+    for v in ["z", "HGT", "p"]:
+        assert v in pp.extract_vars
+    assert any(set(fn.returns) == {"u_met", "v_met"} for fn in pp.postproc_fns)

@@ -10,6 +10,7 @@ import shutil
 from typing import Callable, Dict, List, Self, Tuple
 
 import netCDF4
+import numpy as np
 import pydantic
 import wrf
 import xarray as xr
@@ -26,45 +27,77 @@ STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
 TVarList = List[str | Tuple[str, str]]
 
 
+def normalize_fill_values(v_data: xr.DataArray) -> xr.DataArray:
+    """Replace declared fill/missing sentinels with NaN and drop the corresponding attributes.
+
+    wrf-python stamps `_FillValue`/`missing_value` (float64 1e20) onto some float32 variables (e.g. `p`).
+    xarray then warns about conflicting fill values on every read and silently decodes genuine 1e20 values
+    to NaN. Normalising here means the returned dataset is plain NaN-based and safe to write and re-read.
+    """
+    fill_values = [v_data.attrs.pop(k, None) for k in ("_FillValue", "missing_value")]
+    for k in ("_FillValue", "missing_value"):
+        v_data.encoding.pop(k, None)
+
+    if not np.issubdtype(v_data.dtype, np.floating):
+        # Non-float data cannot hold NaN, so only the attributes are dropped.
+        return v_data
+
+    # Replace sentinels in-place (avoids copying these potentially huge arrays and preserves dtype)
+    arr = v_data.values
+    for fill in fill_values:
+        if fill is None:
+            continue
+        try:
+            if not np.isfinite(fill):
+                continue  # NaN fill value: nothing to replace
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring non-numeric fill value '{fill}' of variable '{v_data.name}'.")
+            continue
+        arr[arr == fill] = np.nan
+
+    return v_data
+
+
 def load_wrfout(f: pathlib.Path | str, vars_to_extract: TVarList) -> xr.Dataset:
     """Load wrfout file and extract variables using wrf-python."""
-    wrf_file = netCDF4.Dataset(f)
+    # wrf-python reads eagerly, so all extracted data stays valid once the file is closed again.
+    with netCDF4.Dataset(f) as wrf_file:
+        # Start actual extraction
+        res = {}
+        for v in vars_to_extract:
+            # Optionally: Extract dimension along which data will be destaggered
+            if isinstance(v, tuple):
+                v, destagger_dim = v
+            else:
+                destagger_dim = None
 
-    # Start actual extraction
-    res = {}
-    for v in vars_to_extract:
-        # Optionally: Extract dimension along which data will be destaggered
-        if isinstance(v, tuple):
-            v, destagger_dim = v
-        else:
-            destagger_dim = None
+            # Get variable for all timesteps (ATTENTION! This is heavy on memory!)
+            logger.info(f"Reading {v}... ")
+            v_data = wrf.getvar(wrf_file, v, timeidx=wrf.ALL_TIMES)
 
-        # Get variable for all timesteps (ATTENTION! This is heavy on memory!)
-        logger.info(f"Reading {v}... ")
-        v_data = wrf.getvar(wrf_file, v, timeidx=wrf.ALL_TIMES)
+            # Now destagger
+            if destagger_dim:
+                destagger_dim_ind = v_data.dims.index(destagger_dim)
+                logger.info(f"Destaggering along {destagger_dim} ({destagger_dim_ind})... ")
+                v_data = wrf.destagger(v_data, destagger_dim_ind, meta=True)
 
-        # Now destagger
-        if destagger_dim:
-            destagger_dim_ind = v_data.dims.index(destagger_dim)
-            logger.info(f"Destaggering along {destagger_dim} ({destagger_dim_ind})... ")
-            v_data = wrf.destagger(v_data, destagger_dim_ind, meta=True)
+            # Serialise object attributes for later netcdf storage
+            v_data.attrs["projection"] = v_data.attrs["projection"].proj4()
+            v_data = v_data.drop_vars("latlon_coord", errors="ignore")
+            v_data = normalize_fill_values(v_data)
 
-        # Serialise object attributes for later netcdf storage
-        v_data.attrs["projection"] = v_data.attrs["projection"].proj4()
-        v_data = v_data.drop_vars("latlon_coord", errors="ignore")
+            # Store it. Maybe write to output file directly to release RAM
+            assert v not in res, f"Variable {v} already in results!"  # this shouldn't happen
+            res[v] = v_data
+            logger.info("Done!")
 
-        # Store it. Maybe write to output file directly to release RAM
-        assert v not in res, f"Variable {v} already in results!"  # this shouldn't happen
-        res[v] = v_data
-        logger.info("Done!")
+        # Collect everything into a single dataset
+        res_ds = xr.Dataset(res)
+        res_ds = res_ds.drop_vars("latlon_coord", errors="ignore")
 
-    # Collect everything into a single dataset
-    res_ds = xr.Dataset(res)
-    res_ds = res_ds.drop_vars("latlon_coord", errors="ignore")
-
-    # Copy attributes from original file
-    for attr in wrf_file.ncattrs():
-        res_ds.attrs[attr] = wrf_file.getncattr(attr)
+        # Copy attributes from original file
+        for attr in wrf_file.ncattrs():
+            res_ds.attrs[attr] = wrf_file.getncattr(attr)
 
     # Rename time
     res_ds = res_ds.rename({"Time": "time"})
@@ -127,47 +160,61 @@ class PostProcStage(Stage):
     run_parallel: bool = False  # whether to run in parallel using multiprocessing
     file_suffix: str = "proc"  # appended to wrfout filenames to indicate post-processed files
     discard_warmup: bool = True  # whether to discard wrfout files from warmup period (default: True)
+    single_precision: bool = True  # cast float64 data variables to float32 before saving
 
-    @pydantic.field_validator("extract_vars", mode="after")
-    def ensure_defaults(cls, extract_vars: TVarList) -> TVarList:
+    @pydantic.model_validator(mode="after")
+    def ensure_resources_for_parallel(self) -> Self:
+        """A parallel run takes its worker count from `resources`, so refuse to build a stage that cannot."""
+        if self.run_parallel and self.resources is None:
+            raise ValueError(
+                "'run_parallel=True' requires 'resources' to be set: "
+                "the number of workers is taken from 'resources.cpus_total'."
+            )
+        return self
+
+    # NOTE: Both validators below must be model validators (not field validators), because field validators
+    # are skipped for default values. Subclasses like Cn2PostProcStage define `extract_vars` as a class
+    # default, so a field validator would never see it. Model validators run in definition order, so
+    # `ensure_defaults` fills in the defaults before `set_default_postproc_fns` moves vars to postproc fns.
+    @pydantic.model_validator(mode="after")
+    def ensure_defaults(self) -> Self:
         """Ensure reasonable defaults like pressure level height and terrain height are included."""
         defaults = ["z", "HGT", "p"]
         for v in defaults:
-            if v not in extract_vars:
-                extract_vars.append(v)
+            if v not in self.extract_vars:
+                self.extract_vars.append(v)
                 logger.warning(f"Added variable '{v}' as reasonable aux variable.")
 
         # Make sure we have full wind vector if one component is requested.
-        if "u_met" in extract_vars and "v_met" not in extract_vars:
-            extract_vars.append("v_met")
+        if "u_met" in self.extract_vars and "v_met" not in self.extract_vars:
+            self.extract_vars.append("v_met")
             logger.warning("Adding 'v_met' because 'u_met' is requested.")
-        if "v_met" in extract_vars and "u_met" not in extract_vars:
-            extract_vars.append("u_met")
+        if "v_met" in self.extract_vars and "u_met" not in self.extract_vars:
+            self.extract_vars.append("u_met")
             logger.warning("Adding 'u_met' because 'v_met' is requested.")
 
-        return extract_vars
+        return self
 
     @pydantic.model_validator(mode="after")
-    @classmethod
-    def set_default_postproc_fns(cls, obj: Self) -> Self:
+    def set_default_postproc_fns(self) -> Self:
         fns = []
 
         # in wrfout, w=wa, but we want it as w
-        if "w" in obj.extract_vars:
+        if "w" in self.extract_vars:
             fns.append(fn_w_rename)
-            obj.extract_vars.remove("w")  # will be added by postproc function, so remove from extract_vars
+            self.extract_vars.remove("w")  # will be added by postproc function, so remove from extract_vars
 
         # wrf.getvar() returns u_met and v_met in one variable, so we need to add a postproc function to split them
-        if "u_met" in obj.extract_vars or "v_met" in obj.extract_vars:
+        if "u_met" in self.extract_vars or "v_met" in self.extract_vars:
             fns.append(fn_uv_split)
-            if "u_met" in obj.extract_vars:
-                obj.extract_vars.remove("u_met")
-            if "v_met" in obj.extract_vars:
-                obj.extract_vars.remove("v_met")
+            if "u_met" in self.extract_vars:
+                self.extract_vars.remove("u_met")
+            if "v_met" in self.extract_vars:
+                self.extract_vars.remove("v_met")
 
         # Add default postproc fns to the top, so downstream fns can depend on them
-        obj.postproc_fns = [*fns, *obj.postproc_fns]
-        return obj
+        self.postproc_fns = [*fns, *self.postproc_fns]
+        return self
 
     def get_inputs(self, s: Simulation) -> List[pathlib.Path]:
         """Get wrfout files for post-processing. Discard files from warmup period by default."""
@@ -225,21 +272,42 @@ class PostProcStage(Stage):
 
         if self.run_parallel:
             # Parallel run
-            n_workers = self.resources.cpus_total
-            logger.info(f"Starting parallel post-processing with {n_workers} workers...")
+            n_workers = self.resources.cpus_total  # guaranteed to exist by `ensure_resources_for_parallel`
+            logger.info(f"Starting parallel post-processing of {len(inputs)} file(s) with {n_workers} workers...")
             with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = [ex.submit(self.run_single, s, f) for f in inputs]
+
+                # Collect all failures instead of raising the first one: the pool waits for every queued
+                # future on exit anyway, so aborting early saves no time but loses the other error messages.
+                failures = []
                 for f in concurrent.futures.as_completed(futures):
-                    f.result()  # Raise exceptions if any
+                    try:
+                        f.result()
+                    except Exception as e:
+                        logger.error(str(e))
+                        failures.append(e)
+
+            if failures:
+                raise RuntimeError(
+                    f"Post-processing failed for {len(failures)} of {len(inputs)} file(s). First error: {failures[0]}"
+                ) from failures[0]
             logger.info("Done!")
         else:
             # Serial run
-            logger.info("Starting serial post-processing...")
+            logger.info(f"Starting serial post-processing of {len(inputs)} file(s)...")
             for f in inputs:
                 self.run_single(s, f)
 
     def run_single(self, s: Simulation, i_f: int | pathlib.Path):
+        """Post-process a single wrfout file, given either as path or as index into `get_inputs`."""
         f = self.get_inputs(s)[i_f] if isinstance(i_f, int) else i_f
+        try:
+            self._run_single(s, f)
+        except Exception as e:
+            # Attach the input file, which is otherwise lost when the error surfaces in the parent process
+            raise RuntimeError(f"Post-processing failed for {f.name}: {e}") from e
+
+    def _run_single(self, s: Simulation, f: pathlib.Path):
         f_out = (
             self.get_work_dir(s) / f"{f.name.replace(':', '-')}_{self.file_suffix}.nc"
         )  # replace `:` to avoid problems with windows storage
@@ -272,6 +340,13 @@ class PostProcStage(Stage):
         for fn in self.postproc_fns:
             extract_vars.extend(fn.returns)
         ds = ds[extract_vars]
+
+        # wrf-python returns some computed variables (z, w, u_met, v_met, slp) as float64, which doubles their
+        # size on disk and in RAM without adding information: WRF itself is single precision.
+        if self.single_precision:
+            for v in ds.data_vars:
+                if ds[v].dtype == np.float64:
+                    ds[v] = ds[v].astype(np.float32)
 
         # Log diagnostics
         logger.debug(ds.sizes)
