@@ -13,7 +13,7 @@ import pydantic
 
 from wrf_massive.config import BaseYAMLConfig, yaml_to_dict
 from wrf_massive.log import get_logger
-from wrf_massive.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir
+from wrf_massive import tmp_dir  # imported as module: `Stage` has a method of the same name as its functions
 
 logger = get_logger()
 
@@ -173,7 +173,7 @@ class Stage(pydantic.BaseModel, abc.ABC):
             return
 
         self._check_tmp_work_dir_allowed(s)
-        work_dir_tmp = setup_tmp_work_dir(tmp_root=root, s=s, stage=self)
+        work_dir_tmp = tmp_dir.setup_tmp_work_dir(tmp_root=root, s=s, stage=self)
         self._tmp_depth += 1
         try:
             yield work_dir_tmp
@@ -190,11 +190,45 @@ class Stage(pydantic.BaseModel, abc.ABC):
             if skip_teardown if skip_teardown is not None else self.tmp_skip_teardown:
                 logger.info(f"Teardown disabled for '{self.name}'. Work dir stays in '{work_dir_tmp}'.")
                 return
-            teardown_tmp_work_dir(
+            tmp_dir.teardown_tmp_work_dir(
                 s=s,
                 stage=self,
                 move_globs=teardown_globs if teardown_globs is not None else self.tmp_teardown_globs,
             )
+
+    def teardown_tmp_work_dir(self, s: Simulation, *, all_files: bool = False) -> bool:
+        """Force this stage's work dir back from temporary storage, ignoring `tmp_skip_teardown`.
+
+        This is the explicit counterpart to the automatic teardown at the end of `tmp_work_dir`: it
+        reclaims work dirs left on temporary storage by `tmp_skip_teardown`, by a failed run, or by a
+        stage that was already setup+done (which `Pipeline.run_stage` skips before relocating anything).
+
+        Whether there is anything to do is decided from the symlink on disk, not from `tmp_work_root`,
+        so this still works if the configured root changed since the run that created it.
+
+        Parameters
+        ----------
+        s : Simulation
+            Simulation object.
+        all_files : bool
+            Move the entire work dir back, ignoring `tmp_teardown_globs`.
+
+        Returns
+        -------
+        bool
+            True if a work dir was moved back, False if this stage is not on temporary storage.
+        """
+        work_dir = self.get_work_dir(s, create=False)
+        if not work_dir.is_symlink():
+            logger.info(f"Stage '{self.name}' work dir '{work_dir}' is not on tmp storage. Nothing to tear down.")
+            return False
+
+        tmp_dir.teardown_tmp_work_dir(
+            s=s,
+            stage=self,
+            move_globs=None if all_files else self.tmp_teardown_globs,
+        )
+        return True
 
 
 class BBox(pydantic.BaseModel):
@@ -332,6 +366,36 @@ class Pipeline:
         for i, name in enumerate(stages):
             logger.info(f"Entering stage #{i+1}/{n}: {name}")
             self.run_stage(s=s, name=name, force_setup=force_setup, force_run=force_run)
+
+    def teardown_stage(self, s: Simulation, name: str, all_files: bool = False) -> bool:
+        """Force a single stage's work dir back from temporary storage."""
+        if name not in self.stages:
+            raise ValueError(f"Stage with name {name} not found in pipeline!")
+        return self.stages[name].teardown_tmp_work_dir(s, all_files=all_files)
+
+    def teardown(
+        self,
+        s: Simulation,
+        stages: List[str] | str | None = None,
+        all_files: bool = False,
+    ):
+        """Force work dirs back from temporary storage, for the full pipeline or a subset of stages.
+
+        Note that, unlike `run`, this does NOT honour `.done` markers: a simulation that is finished is
+        exactly the one whose results may still be sitting on temporary storage.
+        """
+        # Prepare stages input
+        if isinstance(stages, str):
+            stages = [stages]
+        elif stages is None:
+            stages = self.stage_names  # by default, select all stages for teardown
+
+        # Tear down stages
+        n = len(stages)
+        for i, name in enumerate(stages):
+            logger.info(f"Tearing down stage #{i+1}/{n}: {name}")
+            if self.teardown_stage(s=s, name=name, all_files=all_files):
+                logger.info(f"Stage '{name}' moved back from tmp storage.")
 
     def add_stages(self, **stages: Stage):
         """Add one or more stages to the pipeline."""

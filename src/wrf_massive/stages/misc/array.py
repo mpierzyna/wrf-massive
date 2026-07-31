@@ -66,6 +66,20 @@ class StageArray(Stage):
         # ExitStack unwinds here, in reverse order: teardown of every substage happens only after all
         # of them have run. It also unwinds correctly if a substage raises.
 
+    def teardown_tmp_work_dir(self, s: Simulation, *, all_files: bool = False) -> bool:
+        """Force all substage work dirs back from temporary storage.
+
+        The array's own work dir is never relocated (it defaults to the sim dir), so this recurses into
+        the substages instead of doing anything to itself.
+        """
+        self._propagate_resources()  # teardown parallelism reads substage resources
+
+        moved = False
+        for name, stage in self.stages.items():
+            logger.info(f"Tearing down substage {name} ({stage.name})")
+            moved |= stage.teardown_tmp_work_dir(s, all_files=all_files)
+        return moved
+
     def setup(self, s: Simulation):
         self._propagate_resources()
 

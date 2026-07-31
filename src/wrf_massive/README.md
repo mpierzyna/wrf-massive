@@ -67,6 +67,17 @@ If a stage fails, its work directory is deliberately left on temporary storage a
 picks up where it left off. If the temporary storage was wiped in the meantime, the leftover symlink is detected
 and cleaned up automatically, and the stage starts from scratch.
 
+Whenever results are still on temporary storage — after `tmp_skip_teardown`, after a failure, or for a stage that
+was already finished — you can fetch them back explicitly with the `teardown` command, which takes the same
+`-s/--stages` selection as `run`:
+
+```bash
+uv run cli.py teardown -s wrf ./test_1        # move the wrf work dir back into the simulation dir
+uv run cli.py teardown --all ./test_1         # all stages, and ignore tmp_teardown_globs
+```
+
+Stages that are not on temporary storage are simply skipped, so running it over the whole pipeline is safe.
+
 Two things are refused, because they would relocate far more than intended: an absolute `work_dir`, and a
 `work_dir` that is (or contains) the simulation directory itself — such as `MarkDone(work_dir=".")`. Inside a
 `StageArray` such a substage is simply skipped with a warning; configured directly on a stage it raises an error.
@@ -83,7 +94,8 @@ without one can also carry their own `tmp_work_root` to be relocated individuall
 
 Whatever is relocated is moved back only once the *last* substage has finished — so a later substage can read an
 earlier one's output while both are still on fast storage (this is the point of putting WRF and its postprocessing
-in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set on the individual substages.
+in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set on the individual substages, and
+`teardown` on the array reaches all of its substages.
 
 ### Resources
 `Resources` is a pydantic model with:

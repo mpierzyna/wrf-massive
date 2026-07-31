@@ -207,6 +207,29 @@ def test_tmp_root_via_pipeline(simple_simulation: Simulation, tmp_path_factory):
     assert not stage_a.get_work_dir(simple_simulation).is_symlink()
 
 
+def test_forced_teardown_recurses_into_substages(simple_simulation: Simulation, tmp_path_factory):
+    """An explicit teardown of the array reclaims every substage left on tmp storage."""
+    tmp_root = tmp_path_factory.mktemp("scratch")
+    stage_a = StageA(work_dir="a", tmp_skip_teardown=True)
+    stage_b = StageA(work_dir="b", tmp_skip_teardown=True)
+    stage_done = MarkDone(work_dir=".")  # never relocated, must be skipped without error
+
+    sa = StageArray(stages={"a": stage_a, "b": stage_b, "done": stage_done}, tmp_work_root=tmp_root)
+    p = Pipeline(wrf_cn2=sa)
+
+    p.run_stage(simple_simulation, "wrf_cn2")
+    assert stage_a.get_work_dir(simple_simulation).is_symlink()
+    assert stage_b.get_work_dir(simple_simulation).is_symlink()
+
+    p.teardown(simple_simulation)
+
+    assert not stage_a.get_work_dir(simple_simulation).is_symlink()
+    assert not stage_b.get_work_dir(simple_simulation).is_symlink()
+    assert (stage_a.get_work_dir(simple_simulation) / "result.txt").exists()
+    assert (stage_b.get_work_dir(simple_simulation) / "result.txt").exists()
+    assert not simple_simulation.sim_dir.is_symlink()
+
+
 def test_substage_own_tmp_root(simple_simulation: Simulation, tmp_path_factory):
     """A tmp root set on a substage is honoured even when the array itself has none."""
     tmp_root = tmp_path_factory.mktemp("scratch")

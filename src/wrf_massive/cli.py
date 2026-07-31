@@ -215,6 +215,45 @@ def get_pipeline_cli(p: Pipeline) -> click.Group:
 
     @cli.command()
     @click.option("--stages", "-s", type=str, required=False, default=None)
+    @click.option(
+        "--all",
+        "all_files",
+        is_flag=True,
+        default=False,
+        help="Move the ENTIRE work dir back, ignoring each stage's tmp_teardown_globs.",
+    )
+    @click.argument("sim_dirs", type=click.Path(exists=True, dir_okay=True), nargs=-1)
+    def teardown(stages: str | None, all_files: bool, sim_dirs: Tuple[str, ...]):
+        """Move stage work dirs back from temporary storage.
+
+        This forces the teardown that normally happens when a stage finishes, overriding
+        `tmp_skip_teardown`. Use it to reclaim results left on temporary storage by a stage configured
+        with `tmp_skip_teardown`, by a failed run, or by an already-completed stage. Stages that are not
+        on temporary storage are skipped.
+
+        Parameters
+        ----------
+        stages : str | None
+            Comma-separated list of stages to tear down. If None, all stages will be torn down.
+        all_files : bool
+            Move the entire work dir back, ignoring each stage's `tmp_teardown_globs`.
+        sim_dirs : Tuple[str, ...]
+            Simulation directories to tear down. At least one must be provided.
+        """
+        if not sim_dirs:
+            raise click.UsageError("At least one simulation directory must be provided.")
+
+        stages = _parse_stages(stages)
+        stages = _validate_stages(stages, require_resources=False)
+        for sim_dir in sim_dirs:
+            s = Simulation.from_disk(sim_dir)
+            click.echo(f"Tearing down stages {stages} for simulation <{s}> from '{s.sim_dir}'...")
+            if all_files:
+                click.echo("Moving back all files, ignoring teardown globs.")
+            p.teardown(s, stages=stages, all_files=all_files)
+
+    @cli.command()
+    @click.option("--stages", "-s", type=str, required=False, default=None)
     @click.option("--jobfile", "-j", type=click.Path(exists=True, dir_okay=False), required=True)
     @click.option("--dep-job", "-d", type=int, required=False, default=None, help="Job ID to depend on.")
     @click.argument("sim_dirs", type=click.Path(exists=True, dir_okay=True), nargs=-1)

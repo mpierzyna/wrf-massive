@@ -24,7 +24,7 @@ use case).
 src/wrf_massive/        # generic, project-agnostic orchestration package
   base.py                # Stage / Simulation / Pipeline / Resources core abstractions
   config.py              # BaseYAMLConfig: pydantic <-> yaml (de)serialization helpers
-  cli.py                  # get_pipeline_cli(pipeline) -> click.Group (init_sims/run/submit)
+  cli.py                  # get_pipeline_cli(pipeline) -> click.Group (init_sims/run/teardown/submit)
   log.py                  # logging helpers
   tmp_dir.py              # move a stage's work dir to a fast tmp location (e.g. ramdisk) and back
   stages/
@@ -67,7 +67,12 @@ tests/                    # pytest; fixtures.py has StageA/StageB/StageFail/Stag
   `<tmp_work_root>/<sim.name>/<work_dir>` and the original path becomes a symlink to it, so `get_work_dir()` keeps
   returning the same path and the kernel does the redirection (this also makes cross-stage reads like
   `s.sim_dir / self.met_em_dir` follow the *other* stage's symlink for free). Knobs: `tmp_teardown_globs` (move only
-  matching files back), `tmp_skip_teardown` (leave results in tmp even on success). On an exception the work dir is
+  matching files back), `tmp_skip_teardown` (leave results in tmp even on success). Teardown can also be forced out
+  of band via `Stage.teardown_tmp_work_dir(s, all_files=...)` / `Pipeline.teardown()` / the CLI's `teardown`: it decides
+  purely from the on-disk symlink (not from `tmp_work_root`), is a no-op on a work dir that is not symlinked, and
+  ignores `tmp_skip_teardown` and every `.done` marker — that is how results left on scratch by
+  `tmp_skip_teardown`, by a crash, or by an already setup+done stage (which `run_stage` skips *before* relocating
+  anything) are reclaimed. `StageArray` overrides it to recurse into its substages. On an exception the work dir is
   left symlinked into tmp and a re-run resumes in place (`setup_tmp_work_dir` is idempotent, and both it and
   `get_work_dir` repair a dangling symlink if the tmp root was wiped in between). `_check_tmp_work_dir_allowed`
   refuses an absolute `work_dir` or one that is/contains `sim_dir` (e.g. `MarkDone(work_dir=".")`) — that would
@@ -175,6 +180,7 @@ cp env_dev.yaml env.yaml                  # pick a machine profile
 uv run cli.py init_sims simulations.py sim_test   # render sim_dir + namelists from a Simulation object
 uv run cli.py run ./test_1                        # run all stages locally
 uv run cli.py run --stages wps ./test_1           # run a subset of stages
+uv run cli.py teardown --stages wps ./test_1      # force work dirs back from tmp storage (--all ignores globs)
 uv run cli.py submit --jobfile slurm_hpc.sh ./test_1              # submit each stage as its own sbatch job
 ```
 

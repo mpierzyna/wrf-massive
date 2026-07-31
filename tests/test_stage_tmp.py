@@ -107,6 +107,87 @@ def test_teardown_globs(simple_simulation: Simulation, tmp_root):
     assert (tmp_root / simple_simulation.name / "a" / "setup.txt").exists()
 
 
+def test_forced_teardown_after_skip_teardown(simple_simulation: Simulation, tmp_root):
+    """An explicit teardown reclaims a work dir that tmp_skip_teardown left behind."""
+    stage = StageA(work_dir="a", tmp_work_root=tmp_root, tmp_skip_teardown=True)
+    p = Pipeline(a=stage)
+    p.run_stage(simple_simulation, "a")
+    assert stage.get_work_dir(simple_simulation).is_symlink()
+
+    p.teardown(simple_simulation)
+
+    work_dir = stage.get_work_dir(simple_simulation)
+    assert not work_dir.is_symlink()
+    assert (work_dir / "setup.txt").exists()
+    assert (work_dir / "result.txt").exists()
+    assert not (tmp_root / simple_simulation.name / "a").exists()
+
+
+def test_forced_teardown_after_failure(simple_simulation: Simulation, tmp_root):
+    """Partial output of a failed run can be moved back explicitly."""
+    stage = StageFail(work_dir="a", tmp_work_root=tmp_root)
+    p = Pipeline(a=stage)
+    with pytest.raises(RuntimeError, match="on purpose"):
+        p.run_stage(simple_simulation, "a")
+
+    p.teardown(simple_simulation)
+
+    work_dir = stage.get_work_dir(simple_simulation)
+    assert not work_dir.is_symlink()
+    assert (work_dir / "partial.txt").exists()
+
+
+def test_forced_teardown_without_tmp_is_noop(simple_simulation: Simulation):
+    """Tearing down a stage that was never relocated does nothing (and does not raise)."""
+    stage = StageA(work_dir="a")
+    Pipeline(a=stage).run_stage(simple_simulation, "a")
+
+    assert stage.teardown_tmp_work_dir(simple_simulation) is False
+    assert (stage.get_work_dir(simple_simulation) / "result.txt").exists()
+
+
+def test_forced_teardown_honours_globs(simple_simulation: Simulation, tmp_root):
+    """A forced teardown moves back only tmp_teardown_globs, unless all_files is set."""
+    stage = StageA(work_dir="a", tmp_work_root=tmp_root, tmp_teardown_globs=["result*"], tmp_skip_teardown=True)
+    p = Pipeline(a=stage)
+    p.run_stage(simple_simulation, "a")
+
+    assert p.teardown_stage(simple_simulation, "a") is True
+
+    work_dir = stage.get_work_dir(simple_simulation)
+    assert (work_dir / "result.txt").exists()
+    assert not (work_dir / "setup.txt").exists()
+    assert (tmp_root / simple_simulation.name / "a" / "setup.txt").exists()
+
+
+def test_forced_teardown_all_files(simple_simulation: Simulation, tmp_root):
+    """all_files ignores tmp_teardown_globs and brings the whole work dir back."""
+    stage = StageA(work_dir="a", tmp_work_root=tmp_root, tmp_teardown_globs=["result*"], tmp_skip_teardown=True)
+    p = Pipeline(a=stage)
+    p.run_stage(simple_simulation, "a")
+
+    p.teardown(simple_simulation, all_files=True)
+
+    work_dir = stage.get_work_dir(simple_simulation)
+    assert not work_dir.is_symlink()
+    assert (work_dir / "result.txt").exists()
+    assert (work_dir / "setup.txt").exists()
+    assert not (tmp_root / simple_simulation.name / "a").exists()
+
+
+def test_forced_teardown_ignores_done_markers(simple_simulation: Simulation, tmp_root):
+    """Unlike run, teardown does not skip a simulation/stage marked as done."""
+    stage = StageA(work_dir="a", tmp_work_root=tmp_root, tmp_skip_teardown=True)
+    p = Pipeline(a=stage)
+    p.run_stage(simple_simulation, "a")
+    (stage.get_work_dir(simple_simulation) / ".done").touch()
+    (simple_simulation.sim_dir / ".done").touch()
+
+    p.teardown(simple_simulation)
+
+    assert not stage.get_work_dir(simple_simulation).is_symlink()
+
+
 def test_refuses_sim_dir_as_work_dir(simple_simulation: Simulation, tmp_root):
     """A stage whose work dir IS the sim dir must never be relocated."""
     stage = MarkDone(work_dir=".", tmp_work_root=tmp_root)
