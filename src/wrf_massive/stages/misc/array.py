@@ -21,6 +21,7 @@ class StageArray(Stage):
     work_dir: TPath = pathlib.Path(".")  # defaults to sim_dir.
     tmp_work_root: TPathExists | None = None
     stage_tmp_teardown_globs: Dict[str, List[str]] = {}  # glob patterns to teardown tmp dirs per stage
+    stage_tmp_skip_teardown: List[str] = []  # stages to skip tmp teardown (e.g., for debugging)
 
     def setup(self, s: Simulation):
 
@@ -70,6 +71,10 @@ class StageArray(Stage):
         # Move back from tmp dir if needed
         if self.tmp_work_root is not None:
             for name, stage in self.stages.items():
+                # Optionally skip teardown, e.g., for debugging
+                if name in self.stage_tmp_skip_teardown:
+                    logger.info(f"Skipping teardown of tmp dir for stage '{name}'")
+                    continue
                 globs = self.stage_tmp_teardown_globs.get(name, None)
                 teardown_tmp_work_dir(s=s, stage=stage, move_globs=globs)
             logger.info("All substages torn down from tmp dirs.")
