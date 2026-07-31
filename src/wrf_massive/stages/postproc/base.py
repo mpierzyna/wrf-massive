@@ -188,41 +188,24 @@ class PostProcStage(Stage):
             )
 
         if self.discard_warmup:
-            inputs_filtered = []
-            inputs_begin = [_parse_fname(f.name) for f in inputs]
-            inputs_begin = list(zip(inputs, inputs_begin))  # (fname, begin)
+            inputs_begin = [(f, _parse_fname(f.name)) for f in inputs]  # (fname, begin)
 
-            # Simple check if only single file
-            if len(inputs) == 1:
-                fname, fdate = inputs_begin[0]
-                if fdate < s.begin:
-                    logger.warning(
-                        f"Only single file {fname} found, which seems to include warmup (expected start: {s.begin}). "
-                        f"File is kept, but warmup is likely not discarded!"
-                    )
-                    inputs_filtered.append(fname)
-                elif fdate == s.begin:
-                    inputs_filtered.append(fname)
-                else:
-                    logger.warning(f"Only single file {fname} found, but starts after simulation begin {s.begin}.")
-                    inputs_filtered.append(fname)
+            at_or_after = [f for f, fdate in inputs_begin if fdate >= s.begin]
+            before = [f for f, fdate in inputs_begin if fdate < s.begin]
 
-                return inputs_filtered
+            if not at_or_after:
+                # Everything starts before begin -> last file is the one containing the usable period
+                logger.warning(
+                    f"All {len(inputs)} file(s) start before simulation begin {s.begin}. Keeping last one "
+                    f"({before[-1].name}), but warmup is likely not discarded!"
+                )
+                return before[-1:]
 
-            # For multiple files, sophisticated check that keeps files around and after simulation begin
-            for (a_path, a_begin), (b_path, b_begin) in zip(inputs_begin[:-1], inputs_begin[1:]):
-                if a_begin < s.begin < b_begin:
-                    # If begin falls between a and b, also keep a.
-                    inputs_filtered.append(a_path)
-                    inputs_filtered.append(b_path)
-                else:
-                    # Either both before begin or both after begin. Keep only if AT begin or after
-                    if a_begin >= s.begin:
-                        inputs_filtered.append(a_path)
-                    if b_begin >= s.begin:
-                        inputs_filtered.append(b_path)
+            # If no file starts exactly at begin, the last file before it contains the simulation start
+            if before and not any(fdate == s.begin for _, fdate in inputs_begin):
+                return [before[-1], *at_or_after]
 
-            return inputs_filtered
+            return at_or_after
 
         return inputs
 
@@ -237,19 +220,22 @@ class PostProcStage(Stage):
         return all([(self.get_work_dir(s) / ".gitignore").exists()])
 
     def run(self, s: Simulation):
+        # Deduplicate defensively: two workers writing the same output file corrupt it / fail on file locking
+        inputs = list(dict.fromkeys(self.get_inputs(s)))
+
         if self.run_parallel:
             # Parallel run
             n_workers = self.resources.cpus_total
             logger.info(f"Starting parallel post-processing with {n_workers} workers...")
             with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as ex:
-                futures = [ex.submit(self.run_single, s, f) for f in self.get_inputs(s)]
+                futures = [ex.submit(self.run_single, s, f) for f in inputs]
                 for f in concurrent.futures.as_completed(futures):
                     f.result()  # Raise exceptions if any
             logger.info("Done!")
         else:
             # Serial run
             logger.info("Starting serial post-processing...")
-            for f in self.get_inputs(s):
+            for f in inputs:
                 self.run_single(s, f)
 
     def run_single(self, s: Simulation, i_f: int | pathlib.Path):
@@ -292,12 +278,19 @@ class PostProcStage(Stage):
         logger.debug(ds.dtypes)
         logger.info(f"-> Processing done. Expected filesize: {ds.nbytes / 1e9:.1f} GB")
 
-        # Save
+        # Save. Write to temp file first and rename, so a killed job never leaves a partial file behind that
+        # looks complete to the existence check above and to `is_done`.
         logger.info(f"-> Saving to {f_out}{' (compressed)' if self.compression else ''}...")
         encoding = {}
         if self.compression:
             encoding = {var: {"zlib": True} for var in ds.data_vars}
-        ds.to_netcdf(f_out, engine="h5netcdf", encoding=encoding)
+
+        f_tmp = f_out.with_name(f".{f_out.name}.tmp")  # leading dot keeps it out of the output globs
+        try:
+            ds.to_netcdf(f_tmp, engine="h5netcdf", encoding=encoding)
+            f_tmp.replace(f_out)  # atomic within the same directory
+        finally:
+            f_tmp.unlink(missing_ok=True)
 
     def is_done(self, s: Simulation) -> bool:
         try:

@@ -1,3 +1,5 @@
+import datetime
+
 import pytest
 import xarray as xr
 from fixtures import WRFOUT_DIR, simple_simulation
@@ -5,6 +7,72 @@ from fixtures import WRFOUT_DIR, simple_simulation
 from wrf_massive.base import Resources, Simulation
 from wrf_massive.stages.postproc import PostProcStage
 from wrf_massive.stages.postproc.cn2 import fn_ct2_cn2
+
+
+def _make_warmup_stage(tmp_path, begin: str, first_file: str, n_files: int = 6, freq_h: int = 6) -> tuple:
+    """Build a stage with `n_files` empty wrfout files, `freq_h` apart, starting at `first_file`."""
+    sim_dir = tmp_path / "sim"
+    wrfout_dir = sim_dir / "wrfout"
+    wrfout_dir.mkdir(parents=True)
+
+    t0 = datetime.datetime.fromisoformat(first_file)
+    for i in range(n_files):
+        t = t0 + datetime.timedelta(hours=freq_h * i)
+        (wrfout_dir / f"wrfout_aux_d01_{t:%Y-%m-%d_%H:%M:%S}.nc").touch()
+
+    s = Simulation(sim_dir=sim_dir, settings={}, warmup_h=12, begin=begin, end="2025-12-31")
+    pp = PostProcStage(
+        work_dir=tmp_path / "out",
+        wrfout_dir="wrfout",
+        domain=1,
+        extract_vars=[],
+        compression=False,
+        resources=Resources(n_tasks=1, cpus_per_task=1, mem_per_cpu="1G"),
+    )
+    return pp, s
+
+
+def test_discard_warmup_no_duplicates(tmp_path):
+    """Every kept input must appear exactly once (parallel workers would otherwise clash on the same output)."""
+    pp, s = _make_warmup_stage(tmp_path, begin="2025-01-02", first_file="2025-01-01T00:00:00", n_files=8)
+    inputs = pp.get_inputs(s)
+    assert len(inputs) == len(set(inputs))
+
+
+def test_discard_warmup_keeps_files_at_and_after_begin(tmp_path):
+    """File starting exactly at begin exists -> keep it and everything after, drop all warmup files."""
+    pp, s = _make_warmup_stage(tmp_path, begin="2025-01-02", first_file="2025-01-01T00:00:00", n_files=8)
+    names = [f.name for f in pp.get_inputs(s)]
+    assert names == [
+        "wrfout_aux_d01_2025-01-02_00:00:00.nc",
+        "wrfout_aux_d01_2025-01-02_06:00:00.nc",
+        "wrfout_aux_d01_2025-01-02_12:00:00.nc",
+        "wrfout_aux_d01_2025-01-02_18:00:00.nc",
+    ]
+
+
+def test_discard_warmup_keeps_file_containing_begin(tmp_path):
+    """No file starts exactly at begin -> keep the last file before it, since it contains the simulation start."""
+    pp, s = _make_warmup_stage(tmp_path, begin="2025-01-01T09:00:00", first_file="2025-01-01T00:00:00", n_files=4)
+    names = [f.name for f in pp.get_inputs(s)]
+    assert names == [
+        "wrfout_aux_d01_2025-01-01_06:00:00.nc",  # contains begin
+        "wrfout_aux_d01_2025-01-01_12:00:00.nc",
+        "wrfout_aux_d01_2025-01-01_18:00:00.nc",
+    ]
+
+
+def test_discard_warmup_without_warmup_files(tmp_path):
+    """No file before begin -> nothing may be dropped (regression: first file used to be skipped)."""
+    pp, s = _make_warmup_stage(tmp_path, begin="2025-01-01", first_file="2025-01-01T00:00:00", n_files=3)
+    assert len(pp.get_inputs(s)) == 3
+
+
+def test_discard_warmup_all_files_before_begin(tmp_path):
+    """All files start before begin -> fall back to the last one."""
+    pp, s = _make_warmup_stage(tmp_path, begin="2025-06-01", first_file="2025-01-01T00:00:00", n_files=3)
+    names = [f.name for f in pp.get_inputs(s)]
+    assert names == ["wrfout_aux_d01_2025-01-01_12:00:00.nc"]
 
 
 @pytest.mark.parametrize("run_parallel", [False, True])
