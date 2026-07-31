@@ -5,7 +5,6 @@ import shutil
 
 from wrf_massive.base import Stage, Simulation, TPathExists, TPath
 from wrf_massive.log import get_logger
-from wrf_massive.stages.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir
 from wrf_massive.stages.utils import load_wps_wrf_namelist_tmpl, run_cmd_logged
 
 STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
@@ -94,24 +93,3 @@ class WPSStage(Stage):
     def is_done(self, s: Simulation) -> bool:
         """Successful if met_em* files exist and log indicates success."""
         return is_metgrid_successful(self.get_work_dir(s))
-
-
-class WPSTmpDirStage(WPSStage):
-    """WPS stage running in temp dir (e.g., ram disk or temp SSD).
-    Results are moved back to sim dir after completion."""
-
-    tmp_dir_root: TPathExists  # ramdisk on Linux: /dev/shm
-
-    def setup(self, s: Simulation):
-        # Move work dir to tmp location
-        _ = setup_tmp_work_dir(tmp_root=self.tmp_dir_root, s=s, stage=self)
-        # Continue with normal setup
-        super().setup(s)
-
-    def run(self, s: Simulation):
-        # Run WPS normally. Because of symlink, this will be in temporary dir.
-        super().run(s)
-
-        # Move results back to original work dir
-        teardown_tmp_work_dir(s=s, stage=self)
-        logger.info(f"-> Done.")

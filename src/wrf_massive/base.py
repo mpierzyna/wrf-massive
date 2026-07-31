@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import abc
+import contextlib
 import datetime
+import os
 import pathlib
-from typing import Dict, Annotated, Union
-from typing import List
+from typing import Annotated, Dict, Iterator, List, Union
 
 import pydantic
 
 from wrf_massive.config import BaseYAMLConfig, yaml_to_dict
 from wrf_massive.log import get_logger
+from wrf_massive.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir
 
-logger = get_logger(__name__)
+logger = get_logger()
 
 
 def _parse_datetime(v: str) -> datetime.datetime:
@@ -78,6 +80,16 @@ class Stage(pydantic.BaseModel, abc.ABC):
     work_dir: TPath  # if relative, relative to sim_dir
     resources: Resources | None = None  # resources required by this stage
 
+    # Run this stage's work dir on fast temporary storage (ramdisk, node-local or shared scratch).
+    # The work dir is moved to `<tmp_work_root>/<sim.name>/<work_dir>` and the original path becomes
+    # a symlink to it, so stage implementations need no changes at all: `get_work_dir()` keeps
+    # returning the same path and the filesystem does the redirection. See `Stage.tmp_work_dir`.
+    tmp_work_root: TPathExists | None = None  # None disables the mechanism entirely
+    tmp_teardown_globs: List[str] | None = None  # None moves the whole dir back, else only these globs
+    tmp_skip_teardown: bool = False  # leave results in tmp even on success (debugging, shared scratch)
+
+    _tmp_depth: int = pydantic.PrivateAttr(default=0)  # re-entrancy guard for `tmp_work_dir`
+
     @property
     def name(self) -> str:
         """Name of the class is name of the stage"""
@@ -102,8 +114,87 @@ class Stage(pydantic.BaseModel, abc.ABC):
             return work_dir
         work_dir = s.sim_dir / work_dir
         if create:
+            if work_dir.is_symlink() and not work_dir.exists():
+                # Dangling symlink into a tmp root that was wiped since the last run. `exists()`
+                # follows symlinks, so this is exactly the dangling case. Without this, the mkdir
+                # below would raise FileExistsError and every run would be stuck.
+                logger.warning(f"Work dir '{work_dir}' is a dangling symlink (-> {os.readlink(work_dir)}). Removing.")
+                work_dir.unlink()
             work_dir.mkdir(parents=True, exist_ok=True)
         return work_dir
+
+    def _check_tmp_work_dir_allowed(self, s: Simulation) -> None:
+        """Raise if this stage's work dir must never be relocated to temporary storage."""
+        if self.work_dir.is_absolute():
+            # `tmp_root / s.name / <absolute>` collapses to the absolute path itself -> self-symlink
+            raise ValueError(
+                f"Stage '{self.name}' has an absolute work_dir ('{self.work_dir}'), "
+                "which cannot be run in a tmp work dir."
+            )
+        work_dir = self.get_work_dir(s, create=False).absolute()
+        sim_dir = s.sim_dir.absolute()
+        if work_dir == sim_dir or sim_dir.is_relative_to(work_dir):
+            # e.g. MarkDone(work_dir=".") -> would move the ENTIRE simulation dir to tmp storage
+            raise ValueError(
+                f"Stage '{self.name}' has work_dir '{self.work_dir}', which is (or contains) the simulation "
+                f"dir '{sim_dir}'. Refusing to move it to tmp storage."
+            )
+
+    def tmp_work_dir_allowed(self, s: Simulation) -> bool:
+        """Non-raising variant of `_check_tmp_work_dir_allowed`."""
+        try:
+            self._check_tmp_work_dir_allowed(s)
+        except ValueError:
+            return False
+        return True
+
+    @contextlib.contextmanager
+    def tmp_work_dir(
+        self,
+        s: Simulation,
+        *,
+        root: pathlib.Path | None = None,
+        teardown_globs: List[str] | None = None,
+        skip_teardown: bool | None = None,
+    ) -> Iterator[pathlib.Path | None]:
+        """Run this stage's work dir on fast temporary storage for the duration of the block.
+
+        No-op unless a tmp root is configured (either the `tmp_work_root` field or the `root` argument).
+        The keyword arguments let a parent stage (e.g. `StageArray`) drive its substages without mutating them.
+
+        On success the results are moved back to the simulation dir. If the block raises, the work dir is
+        left symlinked into tmp and the exception is re-raised: a re-run then resumes in place, because
+        `setup_tmp_work_dir` is idempotent.
+        """
+        root = root if root is not None else self.tmp_work_root
+        if root is None or self._tmp_depth > 0:
+            # Mechanism disabled, or we are already inside the context -> do nothing
+            yield None
+            return
+
+        self._check_tmp_work_dir_allowed(s)
+        work_dir_tmp = setup_tmp_work_dir(tmp_root=root, s=s, stage=self)
+        self._tmp_depth += 1
+        try:
+            yield work_dir_tmp
+        except BaseException:
+            self._tmp_depth -= 1
+            logger.error(
+                f"Stage '{self.name}' failed. Work dir is LEFT in '{work_dir_tmp}' "
+                f"(still symlinked from '{self.get_work_dir(s, create=False)}'). A re-run resumes in place."
+            )
+            raise
+        else:
+            # Decrement before tearing down so teardown can call back into `get_work_dir`/this context
+            self._tmp_depth -= 1
+            if skip_teardown if skip_teardown is not None else self.tmp_skip_teardown:
+                logger.info(f"Teardown disabled for '{self.name}'. Work dir stays in '{work_dir_tmp}'.")
+                return
+            teardown_tmp_work_dir(
+                s=s,
+                stage=self,
+                move_globs=teardown_globs if teardown_globs is not None else self.tmp_teardown_globs,
+            )
 
 
 class BBox(pydantic.BaseModel):
@@ -184,23 +275,37 @@ class Pipeline:
         stage = self.stages[name]
 
         # mostly for debugging or to avoid downloading large files again
-        if (stage.get_work_dir(s) / ".done").exists():
+        # (create=False: don't materialise a dir for a stage we may skip, and don't pre-create one
+        #  that the tmp setup below would then have to move again)
+        if (stage.get_work_dir(s, create=False) / ".done").exists():
             logger.info(f"Stage '{name}' is marked to be skipped (found .done file). Skipping.")
             return
 
-        # Setup
-        if not stage.is_setup(s) or force_setup:
-            logger.info(f"Setting up '{name}'...")
-            stage.setup(s)
-        else:
-            logger.info(f"Stage '{name}' already setup, skipping setup.")
-
-        # Run
-        if stage.is_done(s) and not force_run:
-            logger.info(f"Stage '{name}' already done, skipping run.")
+        # Nothing to do: same outcome as the block below, but skips moving the work dir to tmp
+        # storage and back for an already-complete simulation. Safe to check outside the tmp
+        # context: a symlink left over from an earlier failure is still live, so these checks
+        # resolve to the same files either way.
+        if not force_setup and not force_run and stage.is_setup(s) and stage.is_done(s):
+            logger.info(f"Stage '{name}' already setup and done. Skipping.")
             return
-        logger.info(f"Running stage '{name}'...")
-        stage.run(s)
+
+        # Optionally relocate the stage work dir to fast temporary storage. This is a no-op unless
+        # the stage has `tmp_work_root` set. Note that is_setup/is_done below are evaluated INSIDE
+        # the context, i.e. they inspect the tmp dir through the symlink.
+        with stage.tmp_work_dir(s):
+            # Setup
+            if not stage.is_setup(s) or force_setup:
+                logger.info(f"Setting up '{name}'...")
+                stage.setup(s)
+            else:
+                logger.info(f"Stage '{name}' already setup, skipping setup.")
+
+            # Run
+            if stage.is_done(s) and not force_run:
+                logger.info(f"Stage '{name}' already done, skipping run.")
+                return  # normal exit -> the context still tears the tmp dir down
+            logger.info(f"Running stage '{name}'...")
+            stage.run(s)
 
     def run(
         self,

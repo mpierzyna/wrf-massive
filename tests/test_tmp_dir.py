@@ -1,7 +1,8 @@
+import pytest
 from fixtures import StageA, simple_simulation
 
 from wrf_massive.base import Resources
-from wrf_massive.stages.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir
+from wrf_massive.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir
 
 
 def test_setup(tmp_path, simple_simulation):
@@ -158,3 +159,71 @@ def test_both_exist(tmp_path, simple_simulation):
     assert (work_dir_tmp / "setup.txt").exists()
     assert (work_dir_tmp / "result.txt").exists()
     assert (work_dir_tmp / "subdir" / "file.txt").exists()
+
+
+def test_setup_dangling_symlink(tmp_path, simple_simulation):
+    """A symlink into a wiped tmp root is repaired instead of returning a broken path."""
+    stage_a = StageA(work_dir="a")
+
+    work_dir_orig = stage_a.get_work_dir(simple_simulation, create=False)
+    work_dir_orig.parent.mkdir(parents=True, exist_ok=True)
+    work_dir_orig.symlink_to(tmp_path / "gone")
+    assert work_dir_orig.is_symlink() and not work_dir_orig.exists()
+
+    work_dir_tmp = setup_tmp_work_dir(tmp_path, simple_simulation, stage_a)
+
+    assert work_dir_tmp.exists()
+    assert work_dir_orig.resolve() == work_dir_tmp
+    stage_a.setup(simple_simulation)
+    assert (work_dir_tmp / "setup.txt").exists()
+
+
+def test_setup_symlink_to_other_target(tmp_path, simple_simulation):
+    """If the work dir is symlinked elsewhere, that target is returned so the caller tears down the right dir."""
+    stage_a = StageA(work_dir="a")
+
+    other_target = tmp_path / "somewhere_else"
+    other_target.mkdir()
+    work_dir_orig = stage_a.get_work_dir(simple_simulation, create=False)
+    work_dir_orig.parent.mkdir(parents=True, exist_ok=True)
+    work_dir_orig.symlink_to(other_target)
+
+    work_dir_tmp = setup_tmp_work_dir(tmp_path, simple_simulation, stage_a)
+
+    assert work_dir_tmp == other_target
+    assert work_dir_orig.resolve() == other_target
+
+
+def test_teardown_orig_not_symlink(tmp_path, simple_simulation):
+    """If the original work dir is a real dir, teardown must abort without clobbering either side."""
+    stage_a = StageA(work_dir="a")
+
+    work_dir_tmp = setup_tmp_work_dir(tmp_path, simple_simulation, stage_a)
+    stage_a.setup(simple_simulation)
+
+    # Replace the symlink with a real dir, simulating an inconsistent state
+    work_dir_orig = stage_a.get_work_dir(simple_simulation, create=False)
+    work_dir_orig.unlink()
+    work_dir_orig.mkdir()
+    (work_dir_orig / "local.txt").touch()
+
+    with pytest.raises(RuntimeError, match="to be a symlink"):
+        teardown_tmp_work_dir(simple_simulation, stage_a)
+
+    # Neither the original dir nor the results in tmp were touched
+    assert (work_dir_orig / "local.txt").exists()
+    assert (work_dir_tmp / "setup.txt").exists()
+
+
+def test_teardown_tmp_dir_gone(tmp_path, simple_simulation):
+    """If the tmp dir vanished, teardown drops the dangling symlink instead of raising."""
+    stage_a = StageA(work_dir="a")
+
+    work_dir_tmp = setup_tmp_work_dir(tmp_path, simple_simulation, stage_a)
+    work_dir_tmp.rmdir()
+
+    teardown_tmp_work_dir(simple_simulation, stage_a)
+
+    work_dir_orig = stage_a.get_work_dir(simple_simulation, create=False)
+    assert not work_dir_orig.is_symlink()
+    assert not work_dir_orig.exists()

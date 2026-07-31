@@ -1,10 +1,10 @@
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict, Iterator, List
 
+import contextlib
 import pathlib
 
-from wrf_massive.stages.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir
-from wrf_massive.base import Stage, Simulation, TPath, TPathExists
+from wrf_massive.base import Stage, Simulation, TPath
 from wrf_massive.log import get_logger
 
 logger = get_logger("stages.misc.array")
@@ -13,32 +13,64 @@ logger = get_logger("stages.misc.array")
 class StageArray(Stage):
     """Stage that holds an array of sub-stages to be run sequentially.
     Only resources defined at the array level are used. This is useful to execute multiple stages in one SLURM job.
-    Specifying a `tmp_work_root` allows to run the stages, e.g., on a scratch disk.
-    Specifying `stage_tmp_teardown_globs` allows to move back only specific files after all stages are done.
+
+    Specifying a `tmp_work_root` runs the SUBSTAGES on temporary storage, e.g. a scratch disk. It does not
+    apply to the array's own work dir, which defaults to the simulation dir and must never be moved.
+    All substages are moved to tmp up front and moved back only once ALL of them have run, so a later
+    substage can consume an earlier one's output while both are still on fast storage. Per-substage
+    behaviour (`tmp_teardown_globs`, `tmp_skip_teardown`) is configured on the substages themselves.
     """
 
     stages: Dict[str, Stage]  # List of stages to run in sequence
     work_dir: TPath = pathlib.Path(".")  # defaults to sim_dir.
-    tmp_work_root: TPathExists | None = None
-    stage_tmp_teardown_globs: Dict[str, List[str]] = {}  # glob patterns to teardown tmp dirs per stage
-    stage_tmp_skip_teardown: List[str] = []  # stages to skip tmp teardown (e.g., for debugging)
 
-    def setup(self, s: Simulation):
-
-        for name, stage in self.stages.items():
-            logger.info(f"Substage is {name} ({stage.name})")
-
-            # Adjust ressources
+    def _propagate_resources(self) -> None:
+        """Overwrite substage resources with the array's own, since the array is submitted as one job."""
+        for stage in self.stages.values():
             if self.resources != stage.resources:
-                logger.warning(f"Stage array and substage have different resources! Using array resources.")
+                logger.warning("Stage array and substage have different resources! Using array resources.")
                 logger.warning(f"Overwriting {stage.resources} -> {self.resources}")
                 stage.resources = self.resources
 
-            # If tmp_work_root defined, execute array in tmp dir
-            if self.tmp_work_root is not None:
-                _ = setup_tmp_work_dir(tmp_root=self.tmp_work_root, stage=stage, s=s)
+    @contextlib.contextmanager
+    def tmp_work_dir(
+        self,
+        s: Simulation,
+        *,
+        root: pathlib.Path | None = None,
+        teardown_globs: List[str] | None = None,
+        skip_teardown: bool | None = None,
+    ) -> Iterator[pathlib.Path | None]:
+        """Run all substage work dirs on temporary storage, tearing them all down only at the very end."""
+        root = root if root is not None else self.tmp_work_root
 
-            # Setup stage
+        # A root set on the array applies to all substages; otherwise each substage may bring its own
+        to_relocate = {name: (root or stage.tmp_work_root) for name, stage in self.stages.items()}
+        to_relocate = {name: sub_root for name, sub_root in to_relocate.items() if sub_root is not None}
+        if not to_relocate:
+            yield None
+            return
+
+        self._propagate_resources()  # teardown parallelism reads substage resources
+        with contextlib.ExitStack() as stack:
+            for name, sub_root in to_relocate.items():
+                stage = self.stages[name]
+                if not stage.tmp_work_dir_allowed(s):
+                    logger.warning(
+                        f"Substage '{name}' ({stage.name}) cannot be run in a tmp work dir "
+                        f"(work_dir='{stage.work_dir}'). Leaving it in place."
+                    )
+                    continue
+                stack.enter_context(stage.tmp_work_dir(s, root=sub_root))
+            yield None
+        # ExitStack unwinds here, in reverse order: teardown of every substage happens only after all
+        # of them have run. It also unwinds correctly if a substage raises.
+
+    def setup(self, s: Simulation):
+        self._propagate_resources()
+
+        for name, stage in self.stages.items():
+            logger.info(f"Substage is {name} ({stage.name})")
             if not stage.is_setup(s):
                 stage.setup(s)
             else:
@@ -47,17 +79,9 @@ class StageArray(Stage):
         logger.info("All substages set up.")
 
     def is_setup(self, s: Simulation) -> bool:
-        def _is_stage_setup(stage: Stage) -> bool:
-            """Check if stage is setup. If tmp_work_root is defined, also check if work dir is symlinked."""
-            work_dir = stage.get_work_dir(s, create=False)
-            if (self.tmp_work_root is not None) and work_dir.exists():
-                # We have existing work dir, so check if it is symlinked (to tmp dir)
-                # I assume here that checking for a symlink is enough. I don't check
-                # if it is linked to a different tmp dir.
-                return work_dir.is_symlink() and stage.is_setup(s)
-            return stage.is_setup(s)
-
-        return all([_is_stage_setup(stage) for stage in self.stages.values()])
+        # No symlink check needed: the driver enters `tmp_work_dir` before calling this, so the
+        # substage work dirs are already symlinked into tmp by the time we get here.
+        return all([stage.is_setup(s) for stage in self.stages.values()])
 
     def run(self, s: Simulation):
         # Run all stages in sequence
@@ -67,17 +91,6 @@ class StageArray(Stage):
             else:
                 logger.info(f"Substage '{stage.name}' already done. Skipping...")
         logger.info("All substages run.")
-
-        # Move back from tmp dir if needed
-        if self.tmp_work_root is not None:
-            for name, stage in self.stages.items():
-                # Optionally skip teardown, e.g., for debugging
-                if name in self.stage_tmp_skip_teardown:
-                    logger.info(f"Skipping teardown of tmp dir for stage '{name}'")
-                    continue
-                globs = self.stage_tmp_teardown_globs.get(name, None)
-                teardown_tmp_work_dir(s=s, stage=stage, move_globs=globs)
-            logger.info("All substages torn down from tmp dirs.")
 
     def is_done(self, s: Simulation) -> bool:
         return all([stage.is_done(s) for stage in self.stages.values()])

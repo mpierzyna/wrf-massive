@@ -26,6 +26,7 @@ src/wrf_massive/        # generic, project-agnostic orchestration package
   config.py              # BaseYAMLConfig: pydantic <-> yaml (de)serialization helpers
   cli.py                  # get_pipeline_cli(pipeline) -> click.Group (init_sims/run/submit)
   log.py                  # logging helpers
+  tmp_dir.py              # move a stage's work dir to a fast tmp location (e.g. ramdisk) and back
   stages/
     forcing/              # download/prepare forcing data for WPS (currently: CERRA via rclone)
     wps/                  # render namelist.wps, run WPS (geogrid/ungrib/metgrid)
@@ -33,7 +34,6 @@ src/wrf_massive/        # generic, project-agnostic orchestration package
     postproc/             # postprocessing of WRF output (e.g. Cn2)
     misc/                 # small utility stages (array.py, done.py, gc.py)
     utils.py               # render_template, run_cmd_logged, namelist template loader/getter
-    tmp_dir.py             # move a stage's work dir to a fast tmp location (e.g. ramdisk) and back
 workspaces/example/      # a concrete, documented example workspace (the reference for how to build your own)
   pipeline.py             # assembles Stage instances into named Pipeline(s) (p_default, p_hpc, ...)
   simulations.py          # defines Simulation objects (begin/end/warmup/settings/sim_dir)
@@ -41,7 +41,8 @@ workspaces/example/      # a concrete, documented example workspace (the referen
   namelist.tmpl.wps/.input   # Jinja2 templates for WPS/WRF namelists
   cli.py                  # thin wrapper: loads env.yaml, picks pipeline, calls get_pipeline_cli
 submodules/WRF, submodules/WPS   # optional NCAR submodules (git submodule update --init --recursive)
-tests/                    # pytest; fixtures.py has StageA/StageB test doubles + simple_simulation fixture
+tests/                    # pytest; fixtures.py has StageA/StageB/StageFail/StageReadsOther test doubles
+                          #   + simple_simulation fixture
 ```
 
 `wrf_massive` itself must stay workspace-agnostic — project-specific config, templates and pipelines belong in a
@@ -58,9 +59,25 @@ tests/                    # pytest; fixtures.py has StageA/StageB test doubles +
   `is_setup`, `setup`, `is_done`, `run`. `work_dir` is relative to `sim_dir` unless given as an absolute path
   (`get_work_dir()` handles resolution + directory creation). Stages should keep side effects (network, big
   downloads) inside `setup()`/`run()` so they're easy to mock in tests, and should be idempotent.
-- **`Pipeline`**: ordered dict of named `Stage`s. `run_stage()` skips a stage if its `work_dir/.done` exists, calls
-  `setup()` unless already `is_setup()`, then `run()` unless already `is_done()`. `Pipeline.run()` skips the whole
-  simulation if `sim_dir/.done` exists.
+- **Running a stage on temporary storage**: any `Stage` can have its work dir relocated to fast storage (ramdisk,
+  node-local or shared scratch) by setting `tmp_work_root`. The mechanism lives entirely in
+  `Stage.tmp_work_dir(s)` (a `@contextlib.contextmanager` wrapping `tmp_dir.py`'s `setup_tmp_work_dir` /
+  `teardown_tmp_work_dir`) and is entered by the *driver* — `Pipeline.run_stage` wraps its whole setup/run block
+  in it. Concrete stages therefore need **no** changes: the work dir is moved to
+  `<tmp_work_root>/<sim.name>/<work_dir>` and the original path becomes a symlink to it, so `get_work_dir()` keeps
+  returning the same path and the kernel does the redirection (this also makes cross-stage reads like
+  `s.sim_dir / self.met_em_dir` follow the *other* stage's symlink for free). Knobs: `tmp_teardown_globs` (move only
+  matching files back), `tmp_skip_teardown` (leave results in tmp even on success). On an exception the work dir is
+  left symlinked into tmp and a re-run resumes in place (`setup_tmp_work_dir` is idempotent, and both it and
+  `get_work_dir` repair a dangling symlink if the tmp root was wiped in between). `_check_tmp_work_dir_allowed`
+  refuses an absolute `work_dir` or one that is/contains `sim_dir` (e.g. `MarkDone(work_dir=".")`) — that would
+  relocate the entire simulation. Caveat for stage authors: the redirection is *by path*, so calling `.resolve()`
+  on the work dir or caching an absolute path at construction time leaks tmp paths. A bare `stage.run(s)` called
+  outside `Pipeline`/`StageArray` gets no tmp dir.
+- **`Pipeline`**: ordered dict of named `Stage`s. `run_stage()` skips a stage if its `work_dir/.done` exists or if it
+  is already both `is_setup()` and `is_done()` (checked before any tmp relocation, so a finished simulation costs
+  nothing), then calls `setup()` unless already `is_setup()` and `run()` unless already `is_done()`, all inside the
+  stage's tmp context. `Pipeline.run()` skips the whole simulation if `sim_dir/.done` exists.
 - **`Resources`**: `n_tasks`, `cpus_per_task`, `mem_per_cpu`, optional `walltime`; used by the CLI's SLURM
   submission helpers to build `sbatch` args. Optional `max_concurrent: int` caps how many jobs for that
   stage can be *running* at once across all simulations, independent of CPU/core headroom — enforced in
@@ -117,6 +134,16 @@ postproc).
 4. **`postproc`** (`stages/postproc/`) — post-processes WRF output (e.g. `cn2.py`).
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
+`StageArray` runs several substages inside one job (one SLURM allocation). It overrides `tmp_work_dir` only:
+`tmp_work_root` set on the array applies to its *substages* (never to the array's own `work_dir`, which defaults to
+`sim_dir`); a substage without an array-level root falls back to its own `tmp_work_root`, so substages can also be
+relocated individually. A `contextlib.ExitStack` enters all of them up front so teardown happens only after *all*
+substages have run — a later substage can then consume an earlier one's output while both are still on fast storage
+(this is what the production `wrf` → `cn2` array relies on, and it is why the array cannot simply enter each
+substage's context around its own `setup`/`run`). The stack also unwinds correctly when a substage raises. Roots are
+passed as `tmp_work_dir(root=...)` keyword arguments rather than written onto the substages, because the same stage
+instances are shared with other pipelines; per-substage behaviour (`tmp_teardown_globs`, `tmp_skip_teardown`) is
+configured on the substages themselves. A substage that cannot be relocated is warned about and left in place.
 
 ## Which variables ungrib/WPS actually needs
 

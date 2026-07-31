@@ -1,15 +1,19 @@
 from __future__ import annotations
-from typing import List
 
+import concurrent.futures
 import os
 import pathlib
 import shutil
-import concurrent.futures
+from typing import TYPE_CHECKING, List
 
-from wrf_massive.base import Simulation, Stage
 from wrf_massive.log import get_logger
 
-logger = get_logger("stages.tmp_dir")
+if TYPE_CHECKING:
+    # Only needed for annotations, which are lazy (`from __future__ import annotations`).
+    # Importing at runtime would be circular: `base` calls into this module.
+    from wrf_massive.base import Simulation, Stage
+
+logger = get_logger("tmp_dir")
 
 
 def setup_tmp_work_dir(tmp_root, s: Simulation, stage: Stage) -> pathlib.Path:
@@ -35,12 +39,24 @@ def setup_tmp_work_dir(tmp_root, s: Simulation, stage: Stage) -> pathlib.Path:
     work_dir_tmp.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"-> Setting up {stage.name} in tmp dir '{work_dir_tmp}'...")
 
-    if work_dir_orig.exists():
-        # If previous run crashed, we may have a symlinked dir already
-        if work_dir_orig.is_symlink():
-            logger.warning(f"-> Original {stage.name} work dir is already a symlink. Skip moving.")
+    # If a previous run crashed or was torn down with `skip_teardown`, we may have a symlinked dir already
+    if work_dir_orig.is_symlink():
+        target = pathlib.Path(os.readlink(work_dir_orig))
+        if not work_dir_orig.exists():
+            # Dangling symlink: tmp root was wiped (reboot, cleanup job, node-local scratch).
+            # Drop the broken link and fall through to create a fresh tmp dir.
+            logger.warning(f"-> {stage.name} work dir is a DANGLING symlink (-> {target}). Recreating in tmp.")
+            work_dir_orig.unlink()
+        elif target == work_dir_tmp:
+            logger.warning(f"-> Original {stage.name} work dir is already symlinked to tmp. Skip moving.")
             return work_dir_tmp
+        else:
+            # Linked somewhere else than we would have picked. Return the actual target so the
+            # caller tears down what is really linked instead of an empty dir.
+            logger.warning(f"-> {stage.name} work dir is symlinked to '{target}', not '{work_dir_tmp}'. Skip moving.")
+            return target
 
+    if work_dir_orig.exists():
         if work_dir_tmp.exists():
             # If tmp dir already exists, merge with data from original dir using rsync
             logger.warning(
@@ -67,7 +83,11 @@ def _move_file(src: pathlib.Path, dst: pathlib.Path) -> None:
     shutil.move(str(src), str(dst))
 
 
-def teardown_tmp_work_dir(s: Simulation, stage: Stage, move_globs: List[str] | None = None) -> None:
+def teardown_tmp_work_dir(
+    s: Simulation,
+    stage: Stage,
+    move_globs: List[str] | None = None,
+) -> None:
     """Tear down temporary work dir of stage, moving results back to original location.
     If `move_globs` is provided, only move files matching these glob patterns.
 
@@ -82,16 +102,19 @@ def teardown_tmp_work_dir(s: Simulation, stage: Stage, move_globs: List[str] | N
     """
 
     work_dir_orig = stage.get_work_dir(s, create=False)  # don't create or moving fails!
+
+    # If original dir is not a symlink, something is wrong -> save output and abort.
+    # Note: this check must come BEFORE `os.readlink`, which raises OSError on a non-symlink.
+    if not work_dir_orig.is_symlink():
+        raise RuntimeError(f"Expected {work_dir_orig} to be a symlink to a tmp dir, but it is not!")
+
     work_dir_tmp = pathlib.Path(os.readlink(work_dir_orig))
 
-    # If original dir exists and is not a symlink, something is wrong -> save output and abort
-    if work_dir_orig.exists() and not work_dir_orig.is_symlink():
-        work_dir_error = work_dir_orig.with_suffix("_from_tmp")
-        shutil.move(str(work_dir_tmp), str(work_dir_error))
-        raise RuntimeError(
-            f"Expected {work_dir_orig} to be a symlink to tmp dir, but it is not! "
-            f"Moved results to {work_dir_error} for inspection."
-        )
+    # Tmp dir vanished under us (wiped scratch) -> nothing to move back, just drop the broken link
+    if not work_dir_tmp.exists():
+        logger.warning(f"Tmp work dir '{work_dir_tmp}' is gone. Removing dangling symlink '{work_dir_orig}'.")
+        work_dir_orig.unlink()
+        return
 
     # Remove symlink and move dir back
     if move_globs is None:

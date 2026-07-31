@@ -1,1 +1,1 @@
-from .wps import WPSStage, WPSTmpDirStage
+from .wps import WPSStage

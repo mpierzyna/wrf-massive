@@ -35,12 +35,55 @@ Simulation persistence:
 `Stage` is a `pydantic.BaseModel` subclass and an abstract base class. A typical Stage model includes at least:
 - `work_dir` (TPath) — directory for stage-specific files. If relative, it will be interpreted relative to `Simulation.sim_dir`.
 - `resources` (optional) — a `Resources` object describing job resource needs.
+- `tmp_work_root` (optional) — run this stage on fast temporary storage, see "Running a stage on fast temporary
+  storage" below. Off by default and invisible to the stage implementation.
 
 To implement a new Stage, subclass `Stage` and implement the following abstract methods:
 - `is_setup(self, s: Simulation) -> bool` — return True if setup is complete.
 - `setup(self, s: Simulation)` — perform/setup steps (e.g. download input files).
 - `is_done(self, s: Simulation) -> bool` — return True if stage completed successfully (e.g. output files exist).
 - `run(self, s: Simulation)` — execute the stage (may submit jobs, call binaries, run Python tasks).
+
+### Running a stage on fast temporary storage
+Some stages are much faster if they work on a ramdisk, a node-local SSD or a scratch filesystem instead of the
+(often network-mounted) simulation directory. Any stage can do this — just set `tmp_work_root`:
+
+```python
+    WRFStage(work_dir="3_wrf", tmp_work_root="/scratch-shared/me", ...)
+```
+
+While the stage runs, its work directory lives in `<tmp_work_root>/<simulation name>/<work_dir>` and the usual
+location inside `sim_dir` is a symlink pointing there. Results are moved back when the stage finishes. **You do not
+have to change anything in your stage implementation**: `get_work_dir()` keeps returning the same path as always,
+and the filesystem takes care of the redirection.
+
+Two options control what comes back:
+- `tmp_teardown_globs` — move back only files matching these glob patterns and leave the rest behind, e.g.
+  `["namelist.input", "*.log"]` to keep bulky output on scratch.
+- `tmp_skip_teardown` — don't move anything back; the work dir stays on temporary storage (useful for debugging,
+  or when the "temporary" storage is a shared scratch filesystem you want to keep working on).
+
+If a stage fails, its work directory is deliberately left on temporary storage and the log says where. Re-running
+picks up where it left off. If the temporary storage was wiped in the meantime, the leftover symlink is detected
+and cleaned up automatically, and the stage starts from scratch.
+
+Two things are refused, because they would relocate far more than intended: an absolute `work_dir`, and a
+`work_dir` that is (or contains) the simulation directory itself — such as `MarkDone(work_dir=".")`. Inside a
+`StageArray` such a substage is simply skipped with a warning; configured directly on a stage it raises an error.
+
+Note that temporary storage is only used when the stage is run through a `Pipeline` (or a `StageArray`). Calling
+`stage.run(s)` by hand does not relocate anything. And because the redirection works through a symlink at the
+original path, avoid calling `.resolve()` on the work dir or storing absolute paths when you construct a stage —
+you would see temporary paths leak into your output.
+
+### Grouping stages: `StageArray`
+`StageArray` runs several stages inside a single job, which is useful on HPC where one allocation should cover
+e.g. WRF plus its postprocessing. Setting `tmp_work_root` on the array applies to all of its substages; substages
+without one can also carry their own `tmp_work_root` to be relocated individually.
+
+Whatever is relocated is moved back only once the *last* substage has finished — so a later substage can read an
+earlier one's output while both are still on fast storage (this is the point of putting WRF and its postprocessing
+in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set on the individual substages.
 
 ### Resources
 `Resources` is a pydantic model with:
