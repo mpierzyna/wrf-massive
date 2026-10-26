@@ -22,7 +22,7 @@ More specifically,
 > [!NOTE]
 > WRF Massive was created to generate a 1-year WRF dataset using CERRA forcing for the Netherlands as part of my
 > [OTProf](https://github.com/mpierzyna/otprof) deep learning project. Check out the
-> [data generation](https://github.com/mpierzyna/otprof/tree/main/data/nl/wrf) section for a production case of how
+> [data generation](https://github.com/mpierzyna/otprof-wrf) section for a production case of how
 > wrf-massive was used. For a template, which needs modification for your own setup, check the `example` workspace in 
 > this repository.
 
