@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 from wrf_massive.base import BBox, Simulation
 
 # This is a config dictionary, which will be inserted into the namelist.tmpl.input (template)

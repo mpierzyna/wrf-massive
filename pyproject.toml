@@ -8,8 +8,8 @@ author = { name="Maximilian Pierzyna", email="mail@maximilian-pierzyna.de" }
 version = "1.0.0"
 description = "Orchestrate a large number of WRF simulations with SLURM in a flexible way."
 readme = "README.md"
-license = "GPL-3.0-only"
-license-files = ["COPYING"]
+license = "GPL-3.0-or-later AND MIT"
+license-files = ["LICENSES/*.txt"]
 requires-python = ">=3.12"
 dependencies = [
     "cartopy>=0.25.0",

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Following https://github.com/mCodingLLC/VideosSampleCode/tree/master/videos/135_modern_logging
 """

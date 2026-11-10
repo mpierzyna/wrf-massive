@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """CDS request variable/level lists for ERA5 and CERRA, derived from what ungrib/WPS actually reads.
 
 The authoritative source for "what does WPS need" is the Vtable files linked in `stages/wps/run_wps.sh`:

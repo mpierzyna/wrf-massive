@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2024 Harish Baki
+# SPDX-FileContributor: Maximilian Pierzyna
+#
+# SPDX-License-Identifier: MIT
+
 # Based on https://github.com/HarishBaki/EU_SCORES_project/blob/main/WRFV4.4/WPS_pipeline.sh
 
 FORCING_DIR="$1"

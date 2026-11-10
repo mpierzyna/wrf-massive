@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for running a single Stage on temporary storage (`Stage.tmp_work_dir`)."""
 
 import os

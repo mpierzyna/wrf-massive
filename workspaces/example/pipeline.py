@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Setup the pipeline each WRF simulation will go through.
 
 Typically, a pipeline has the following stages:

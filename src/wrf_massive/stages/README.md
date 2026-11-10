@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # Stages of WRF Massive pipeline
 1. `forcing`: Retrieve and prepare forcing data for WPS. `PullCerraStage` pulls pre-mirrored GRIB via `rclone`;
    `PullCdsStage` downloads GRIB directly from the Copernicus Climate Data Store via `cdsapi` (see

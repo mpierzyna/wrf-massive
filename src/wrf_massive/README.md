@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # Developer Guide
 
 The `wrf_massive` package provides a small framework to describe and run WRF-related processing as a sequence of stages 

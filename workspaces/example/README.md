@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # WRF Massive — example workspace
 
 This README explains how to set up and run an example WRF study contained in workspaces/example.

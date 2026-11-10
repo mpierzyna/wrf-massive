@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # WRF Massive
 
 This project provides tooling to orchestrate large-scale WRF (Weather Research and Forecasting) simulation using Slurm. 

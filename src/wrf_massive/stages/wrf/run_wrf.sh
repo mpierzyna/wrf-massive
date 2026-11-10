@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Use N_CPUS from SLURM if available
 if [ -n "$SLURM_NTASKS" ]; then
   N_CPUS=$SLURM_NTASKS

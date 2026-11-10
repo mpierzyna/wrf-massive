@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 #
 # Cut a small horizontal / temporal box out of a wrfout file, keeping the result
 # readable by wrf-python.

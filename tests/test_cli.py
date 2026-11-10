@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Maximilian Pierzyna
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the pipeline CLI (`get_pipeline_cli`)."""
 
 import pathlib
