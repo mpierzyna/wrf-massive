@@ -15,6 +15,7 @@ path = [
     "**/*.yaml", 
     "**/.gitignore", 
     "pyproject.toml", 
+    "CITATION.cff",
     "uv.lock", 
     ".gitmodules", 
     ".python-version", 

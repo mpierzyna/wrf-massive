@@ -26,11 +26,11 @@ More specifically,
   You can pull them using `git submodule update --init --recursive` and build them according to their own instructions.
 
 > [!NOTE]
-> WRF Massive was created to generate a 1-year WRF dataset using CERRA forcing for the Netherlands as part of my
-> [OTProf](https://github.com/mpierzyna/otprof) deep learning project. Check out the
-> [data generation](https://github.com/mpierzyna/otprof-wrf) section for a production case of how
-> wrf-massive was used. For a template, which needs modification for your own setup, check the `example` workspace in 
-> this repository.
+> WRF Massive was created to generate the WRF-based $C_n^2$ training data of the
+> [OTProf](https://github.com/mpierzyna/otprof) deep learning project (1 year of CERRA-forced simulations for the
+> Netherlands and the Canary Islands). The repository [`otprof-wrf`](https://github.com/mpierzyna/otprof-wrf) contains
+> these production workspaces and shows how wrf-massive is used at scale. For a template, which needs modification for
+> your own setup, check the `example` workspace in this repository.
 
 ## Submodules vs external WRF/WPS
 
@@ -69,3 +69,8 @@ Alternatively, just running commands with `uv run` will always make sure the env
 2. Inspect `workspace/example` to copy example configuration and job templates into your workspace.
 3. Use the CLI in `wrf_massive` to create and submit evaluations (see `wrf_massive/cli.py` for the available commands).
    Typical invocation is via the Python CLI in your activated environment.
+
+## How to cite
+When using wrf-massive, please cite it either using the `./CITATION.cff` file or the following information:
+
+> Pierzyna, M. (2026). *wrf-massive: flexible, scalable orchestration of WRF simulations* (Version 1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24113829

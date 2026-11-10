@@ -4,9 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wrf_massive"
-author = { name="Maximilian Pierzyna", email="mail@maximilian-pierzyna.de" }
 version = "1.0.0"
-description = "Orchestrate a large number of WRF simulations with SLURM in a flexible way."
+authors = [{ name = "Maximilian Pierzyna", email = "mail@maximilian-pierzyna.de" }]
+description = "Flexible, scalable orchestration of WRF simulations"
 readme = "README.md"
 license = "GPL-3.0-or-later AND MIT"
 license-files = ["LICENSES/*.txt"]
@@ -41,6 +41,46 @@ wrf-python = { git = "https://github.com/NCAR/wrf-python", tag = "v1.4.2" }
 
 [tool.ruff]
 line-length = 120  # align with pycharm
+
+# Release: `uvx bump-my-version bump patch|minor|major` updates the files below, commits and tags
+[tool.bumpversion]
+current_version = "1.0.0"
+commit = true
+tag = true
+tag_name = "v{new_version}"
+message = "Bump version: {current_version} → {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "uv.lock"
+regex = true
+search = '^name = "wrf-massive"\nversion = "\d+\.\d+\.\d+"$'
+replace = """name = "wrf-massive"
+version = "{new_version}\""""
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = """
+name = "wrf_massive"
+version = "{current_version}"
+"""
+replace = """
+name = "wrf_massive"
+version = "{new_version}"
+"""
+
+# The software's version and release date only, not the versions of its references
+[[tool.bumpversion.files]]
+filename = "CITATION.cff"
+regex = true
+search = '^version: {current_version}\ndate-released: "\d{{4}}-\d{{2}}-\d{{2}}"$'
+replace = """version: {new_version}
+date-released: "{now:%Y-%m-%d}\""""
+
+# The Zenodo DOI and the Zenodo citation in README.md are static on purpose and not bumped
+[[tool.bumpversion.files]]
+filename = "CITATION.cff"
+search = "/tree/v{current_version}"
+replace = "/tree/v{new_version}"
 
 [dependency-groups]
 dev = [
