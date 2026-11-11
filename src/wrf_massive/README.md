@@ -20,23 +20,26 @@ and conventions used by pipelines and simulations in this project.
 
 Key files:
 - `wrf_massive/base.py` — core logic and types (Resources, Stage, Simulation, Pipeline).
-- `wrf_massive/cli.py`, `wrf_massive/workspace.py`, `wrf_massive/log.py`, and other modules integrate with the
-  framework (CLI, workspaces, logging); see [Workspaces](#workspaces) for using the `wrf-massive` CLI. The rest of
-  this README focuses on the developer-facing API in `base.py`.
+- `wrf_massive/stages/` — the built-in stages, see [Built-in stages](#built-in-stages).
+- `wrf_massive/cli.py`, `wrf_massive/workspace.py` — the `wrf-massive` command and workspace handling, see
+  [Workspaces](#workspaces).
+- `wrf_massive/templates/workspace/` — the files `wrf-massive init` copies into a new workspace.
+- `wrf_massive/plotting.py`, `wrf_massive/third_party/` — domain plots, see [Plotting domains](#plotting-domains).
+- `wrf_massive/log.py`, `wrf_massive/config.py`, `wrf_massive/tmp_dir.py` — logging, YAML (de)serialisation and the
+  temporary-storage mechanism.
 
 
 ### Simulation
 Details about individual simulations are captured in the `Simulation` class, a `pydantic.BaseModel` subclass.
-- Fields: `begin`, `end` (both accept datetimes or ISO strings), `warmup_h`, `settings` (dict), and `sim_dir` (TPath).
-- `begin_w_warmup` property returns `begin - warmup_h hours`.
-- `to_disk(root)` writes a `simulation.yaml` to the chosen root / sim_dir (excluding the `sim_dir` field itself in the 
-  YAML) so simulation configs can be reloaded.
-- `from_disk(sim_dir)` reads `simulation.yaml` and returns a `Simulation` object; it expects the directory to exist.
-
-Simulation persistence:
-- Use `Simulation.to_disk(root)` to write `simulation.yaml` into `root / sim_dir`.
-- Use `Simulation.from_disk(sim_dir)` to reconstruct a Simulation object from disk;
-  it expects `simulation.yaml` to be present.
+- Fields: `begin`, `end` (both accept datetimes or ISO strings) bound the usable period, `warmup_h` (default 12)
+  adds a spin-up window before it, `settings` (`Dict[str, str]`) is inserted into the namelist templates, `sim_dir`
+  (TPath) is where everything for this run lives, and the optional `area` (`BBox`, north/west/south/east) is the
+  lat/lon box of CDS forcing downloads.
+- `begin_w_warmup` property returns `begin - warmup_h hours`; `name` is the name of `sim_dir`, used e.g. for SLURM
+  job names and temporary-storage paths.
+- `to_disk(root)` writes `simulation.yaml` into `root / sim_dir` (without the `sim_dir` field itself), and
+  `from_disk(sim_dir)` reads it back. `wrf-massive init-sims` does the former for the simulations of a workspace,
+  the other commands the latter.
 
 ### Stages
 `Stage` is a `pydantic.BaseModel` subclass and an abstract base class. A typical Stage model includes at least:
@@ -44,6 +47,7 @@ Simulation persistence:
 - `resources` (optional) — a `Resources` object describing job resource needs.
 - `tmp_work_root` (optional) — run this stage on fast temporary storage, see "Running a stage on fast temporary
   storage" below. Off by default and invisible to the stage implementation.
+- `name` — the class name, used in log messages.
 
 To implement a new Stage, subclass `Stage` and implement the following abstract methods:
 - `is_setup(self, s: Simulation) -> bool` — return True if setup is complete.
@@ -96,7 +100,8 @@ you would see temporary paths leak into your output.
 
 ### Grouping stages: `StageArray`
 `StageArray` runs several stages inside a single job, which is useful on HPC where one allocation should cover
-e.g. WRF plus its postprocessing. Setting `tmp_work_root` on the array applies to all of its substages; substages
+e.g. WRF plus its postprocessing. The array is submitted as one job, so its `resources` replace those of its
+substages (with a warning if they differ). Setting `tmp_work_root` on the array applies to all of its substages; substages
 without one can also carry their own `tmp_work_root` to be relocated individually.
 
 Whatever is relocated is moved back only once the *last* substage has finished — so a later substage can read an
@@ -112,21 +117,25 @@ in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set
   SLURM decides how many tasks go on each node (it fills nodes one after the other), so the split is only even if
   the tasks exactly fill the nodes, e.g. 2 × 128 on nodes with 128 cores.
   Only MPI programs (WRF, WPS) can make use of several nodes; Python stages such as postprocessing run on one.
-- For `WRFStage`, `n_tasks` is checked against the range recommended for the domain size in the namelist
-  (`e_we`/`e_sn`, following the [WRF forum](https://forum.mmm.ucar.edu/threads/choosing-an-appropriate-number-of-processors.5082/)):
-  the range is logged as info, and a warning is logged if `n_tasks` is below or above it.
 - `cpus_total` is a convenience property computed as `n_tasks * cpus_per_task`.
 - `max_concurrent` (optional `int`) — limits how many jobs for this stage are allowed to run at the
   same time. Unset by default (no limit). See "Submitting to SLURM" below for when to use it.
 
 ### Pipeline
-- Construct a pipeline with named Stage instances: Pipeline(foo=StageA(...), bar=StageB(...)). 
-  The argument names are the keys used to reference stages.
-- Use `Pipeline.run(s)` to execute all stages (or pass a subset via `stages=` or a single stage name).
-- `run_stage` supports `force_setup` and `force_run` flags to re-run setup or run even when checks say done.
+- Construct a pipeline with named Stage instances: `Pipeline(foo=StageA(...), bar=StageB(...))`.
+  The argument names are the keys used to reference stages (`p["foo"]`, `p.stage_names`, `--stages` in the CLI).
+- `Pipeline.run(s)` executes all stages in order, or a subset via `stages=` (a list or a single name). It skips the
+  whole simulation if `sim_dir/.done` exists.
+- `run_stage(s, name)` skips a stage if its work dir contains `.done`, or if it is already `is_setup` and `is_done`.
+  Otherwise it runs `setup()` unless already set up and `run()` unless already done. `force_setup`/`force_run`
+  re-run those steps anyway; a `.done` marker still skips the stage.
+- `teardown(s)` / `teardown_stage(s, name)` move work dirs back from temporary storage (see above).
 
 ### Submitting to SLURM (`wrf-massive submit`)
-The CLI's `submit` command submits each requested stage of each simulation as its own SLURM job.
+The CLI's `submit` command submits each requested stage of each simulation as its own SLURM job. Every submitted
+stage needs `resources`, which become the `sbatch` options `--nodes`, `--ntasks`, `--cpus-per-task`,
+`--mem-per-cpu` and, if `walltime` is set, `--time`. The stages of a simulation depend on each other (`afterok`), and `--dep-job` makes
+the first one also wait for another job. SLURM writes the job output to `<sim_dir>/slurm/<stage>_<job id>.out`.
 Each simulation is submitted independently, so submitting many simulations at once can run many
 jobs for the same stage in parallel.
 
@@ -154,8 +163,31 @@ Additionally,
 - Use `stage.get_work_dir(s)` to obtain the directory for stage files; if `work_dir` on the stage is relative, it is
   resolved relative to `s.sim_dir`. By default this creates the directory.
 - Stages and Pipelines use a simple `.done` marker convention: if a stage's work directory contains a file named
-  `.done`, the pipeline's `run_stage` will skip the stage.
+  `.done`, the pipeline's `run_stage` will skip the stage, even with `force_run`. `MarkDone` writes it (with
+  `work_dir="."` for the whole simulation), and `GarbageCollectStage` writes it into a stage's work dir after
+  deleting that stage's data, so it isn't run again.
 - To skip the entire simulation, create a `.done` file in `s.sim_dir` (the Pipeline checks for this as well).
+
+## Built-in stages
+
+| Stage | Module | Purpose |
+|---|---|---|
+| `PullCdsStage` | `stages/forcing/cds.py` | Download forcing (CERRA, ERA5) from the Copernicus Climate Data Store, split per time step for WPS. |
+| `PullCerraStage` | `stages/forcing/cerra.py` | Copy pre-mirrored CERRA files from an rclone remote. |
+| `WPSStage` | `stages/wps/wps.py` | Render the WPS namelists and run geogrid, ungrib (CERRA and ERA5) and metgrid. |
+| `WRFStage` | `stages/wrf/wrf.py` | Render `namelist.input`, link the `met_em` files and run WRF. |
+| `PostProcStage`, `Cn2PostProcStage` | `stages/postproc/` | Extract variables from `wrfout` files and compute e.g. $C_n^2$ (NetCDF output). |
+| `MarkDone` | `stages/misc/done.py` | Write a `.done` marker, e.g. for the whole simulation. |
+| `GarbageCollectStage` | `stages/misc/gc.py` | Delete data of an earlier stage once it is no longer needed (only when `armed`). |
+| `StageArray` | `stages/misc/array.py` | Run several stages in one job, see above. |
+
+Notes:
+- `WRFStage` checks `resources.n_tasks` against the range recommended for the domain size in the namelist
+  (`e_we`/`e_sn`, following the [WRF forum](https://forum.mmm.ucar.edu/threads/choosing-an-appropriate-number-of-processors.5082/)):
+  the range is logged as info, and a warning is logged if `n_tasks` is below or above it.
+- The postprocessing stages need `wrf-python`, which is installed with the `postproc` extra of wrf-massive.
+
+See `stages/README.md` for a short overview of the four pipeline steps.
 
 ## Workspaces
 
@@ -165,11 +197,12 @@ directory); existing files are only overwritten with `--force`. The template con
 | File | Purpose |
 |---|---|
 | `env.yaml` | Machine-specific settings: paths to WPS/WRF, which pipeline to use, log level. |
-| `pipeline.py` | Assembles stages into named pipelines (`p_default`: CERRA + ERA5 from CDS, WPS, WRF). |
+| `pipeline.py` | Assembles stages into named pipelines (`p_default`: CERRA + ERA5 from CDS, WPS, WRF, `MarkDone`). |
 | `simulations.py` | Defines `Simulation` objects (period, warmup, namelist settings, sim dir, area). |
 | `namelist.tmpl.wps`, `namelist.tmpl.input` | Jinja2 templates for the WPS/WRF namelists, incl. the domain. |
 | `myoutfields.txt` | Additional WRF output fields. |
 | `slurm.job.sh` | Job script for `wrf-massive submit`. |
+| `.gitignore` | Ignores SLURM output, forcing files and the example simulation. |
 
 The template is a starting point and does not run as is: set the WPS/WRF paths in `env.yaml`, set up CDS credentials
 (`~/.cdsapirc` or `CDSAPI_URL`/`CDSAPI_KEY`) and adapt the domain and simulations to your study.
@@ -240,8 +273,7 @@ available, and opens a window otherwise. `domain-geo-em` saves the plot next to 
 
 ```python
     class MyStage(Stage):
-        work_dir: TPath = "mystage"  # relative -> under sim_dir
-        resources: Resources | None = None
+        work_dir: TPath = pathlib.Path("mystage")  # relative -> under sim_dir. Defaults are not validated, so no str!
 
         def is_setup(self, s: Simulation) -> bool:
             # check presence of staged input, or config files
@@ -258,10 +290,11 @@ available, and opens a window otherwise. `domain-geo-em` saves the plot next to 
 
         def run(self, s: Simulation):
             work = self.get_work_dir(s)
-            # run the work (call executable or Python code)
-            # on success, optionally create a .done file in work
-            (work / ".done").write_text("ok")
+            # run the work (call executable or Python code); is_done() then finds its output
 ```
+
+   Let `is_done()` check the stage's output instead of writing a `.done` marker in `run()`: a marker makes the
+   pipeline skip the stage for good, even with `--force-run`.
 
 2) Keep side-effects contained in the stage work directory when possible. Relative `work_dir` paths are recommended to 
    keep simulation folders self-contained.
@@ -269,8 +302,8 @@ available, and opens a window otherwise. `domain-geo-em` saves the plot next to 
    templating namelists etc.
 4) Prefer idempotent `setup()` and `run()` implementations so re-running does not corrupt state; 
    rely on `is_setup` / `is_done` for quick checks.
-5) If a stage requires an absolute path (shared data, central cache), set `work_dir` to an absolute path. 
-   `Stage.get_work_dir` will not try to create a directory under `sim_dir` when `work_dir` is absolute.
+5) If a stage requires an absolute path (shared data, central cache), set `work_dir` to an absolute path.
+   `Stage.get_work_dir` returns it as is (without creating it), and such a stage cannot run on temporary storage.
 
 ## Registering stages in a pipeline
 
@@ -281,21 +314,28 @@ p = Pipeline(prep=PrepStage(work_dir="prep"), runwrf=RunWRFStage(work_dir="wrf")
 p.run(sim)
 ```
 
-When calling `p.run`, if `sim.sim_dir/.done` exists the whole simulation is skipped. 
+When calling `p.run`, if `sim.sim_dir/.done` exists the whole simulation is skipped.
 If a stage's work directory contains `.done` the pipeline will skip that stage.
+
+In a workspace, define pipelines as module-level variables in `pipeline.py` (e.g. `p_default`, `p_hpc`); the
+`pipeline` key of the env file selects the one the CLI uses.
 
 
 ## Tips
 - Keep `is_setup`/`is_done` checks fast and deterministic so tests can assert stage behavior without expensive I/O when possible.
-- When adding a stage, add unit tests to `tests/` covering:
+- When adding a stage, add unit tests to `tests/` (run them with `uv run pytest`) covering:
   - `is_setup` false -> `setup()` creates required files
   - `run()` produces expected outputs and `.done` markers
   - `get_work_dir()` behavior with relative and absolute `work_dir` values
+
+  `tests/fixtures.py` has small test stages (`StageA`, `StageB`, ...) and a `simple_simulation` fixture to test
+  pipeline behaviour without WRF/WPS.
 
 
 ## Coding style & best practices
 - Use pydantic models for config fields and validation when possible.
 - Keep external side-effects (network, large downloads) behind `setup()` so tests can patch/mock them.
 - Be explicit about file names and markers to avoid accidental collisions between stages.
-- Use black to format code to maintain consistency.
+- Use black to format code (`uv run black src tests`, configured in `pyproject.toml`); files in `third_party/` are
+  vendored and excluded.
 
