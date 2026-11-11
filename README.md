@@ -20,8 +20,8 @@ More specifically,
 - The orchestration code and core CLI are implemented in `wrf_massive`.
   - `wrf_massive` is designed to be as project/workspace-agnostic as possible. 
     It contains the main logic to configure runs, produce Slurm job scripts, submit them and collect outputs.
-- Concrete projects/simulation runs should live in `workspaces`
-  - An example workspace is provided in `workspace/example` with sample configuration, job templates and instructions.
+- Concrete projects/simulation runs live in separate workspaces, which `wrf-massive init` creates from a template
+  with sample configuration, namelist templates and a job script.
 - Optionally, WRF and WPS are included as submodules in `submodules`. 
   You can pull them using `git submodule update --init --recursive` and build them according to their own instructions.
 
@@ -30,7 +30,7 @@ More specifically,
 > [OTProf](https://github.com/mpierzyna/otprof) deep learning project (1 year of CERRA-forced simulations for the
 > Netherlands and the Canary Islands). The repository [`otprof-wrf`](https://github.com/mpierzyna/otprof-wrf) contains
 > these production workspaces and shows how wrf-massive is used at scale. For a template, which needs modification for
-> your own setup, check the `example` workspace in this repository.
+> your own setup, create a workspace with `wrf-massive init`.
 
 ## Submodules vs external WRF/WPS
 
@@ -40,15 +40,20 @@ More specifically,
 
 - Using an external WRF/WPS installation (recommended for reproducible or managed HPC installs):
   - If you already have a system-wide or separately-maintained WRF/WPS installation, you do not need the submodules. 
-    Point this orchestration tool to your existing installation using the configuration mechanism in your workspace 
-    (see `workspace/example/README.md` for an example configuration). This repository only orchestrates runs and does 
-    not require WRF/WPS to be compiled inside it.
+    Point this orchestration tool to your existing installation in your workspace's `env.yaml`. This repository only
+    orchestrates runs and does not require WRF/WPS to be compiled inside it.
 
 
-## Workspace examples
+## Workspaces
 
-The repository contains a `workspace/example` folder with a self-contained example workspace and an example `README.md`. 
-Use that as your primary reference for how to structure a workspace that uses this tool. 
+A workspace is a directory with the configuration of one study: an env file with machine-specific settings, the
+pipeline, the simulations and the WPS/WRF namelist templates. Create one with
+
+```bash
+wrf-massive init my_study
+```
+
+and see the [developer guide](src/wrf_massive/README.md#workspaces) for what the files do.
 
 ## Environment setup
 
@@ -66,9 +71,16 @@ Alternatively, just running commands with `uv run` will always make sure the env
 ## Quick start (high level)
 
 1. Prepare WRF/WPS.
-2. Inspect `workspace/example` to copy example configuration and job templates into your workspace.
-3. Use the CLI in `wrf_massive` to create and submit evaluations (see `wrf_massive/cli.py` for the available commands).
-   Typical invocation is via the Python CLI in your activated environment.
+2. Create a workspace with `wrf-massive init my_study` and adapt `env.yaml`, `pipeline.py`, `simulations.py` and the
+   namelist templates to your study.
+3. Create, run and submit simulations with the `wrf-massive` CLI from anywhere inside the workspace
+   (`wrf-massive --help` lists the commands):
+
+   ```bash
+   wrf-massive init-sims simulations.py sim_test   # create simulation dir test_1
+   wrf-massive run test_1                           # run all stages locally
+   wrf-massive submit -j slurm.job.sh test_1        # or submit each stage as SLURM job
+   ```
 
 ## How to cite
 When using wrf-massive, please cite it either using the `./CITATION.cff` file or the following information:

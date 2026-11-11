@@ -20,8 +20,9 @@ and conventions used by pipelines and simulations in this project.
 
 Key files:
 - `wrf_massive/base.py` — core logic and types (Resources, Stage, Simulation, Pipeline).
-- `wrf_massive/cli.py`, `wrf_massive/log.py`, and other modules integrate with the framework (logging, CLI); this 
-  README focuses on the developer-facing API in `base.py`.
+- `wrf_massive/cli.py`, `wrf_massive/workspace.py`, `wrf_massive/log.py`, and other modules integrate with the
+  framework (CLI, workspaces, logging); see [Workspaces](#workspaces) for using the `wrf-massive` CLI. The rest of
+  this README focuses on the developer-facing API in `base.py`.
 
 
 ### Simulation
@@ -78,8 +79,8 @@ was already finished — you can fetch them back explicitly with the `teardown` 
 `-s/--stages` selection as `run`:
 
 ```bash
-uv run cli.py teardown -s wrf ./test_1        # move the wrf work dir back into the simulation dir
-uv run cli.py teardown --all ./test_1         # all stages, and ignore tmp_teardown_globs
+wrf-massive teardown -s wrf ./test_1         # move the wrf work dir back into the simulation dir
+wrf-massive teardown --all ./test_1          # all stages, and ignore tmp_teardown_globs
 ```
 
 Stages that are not on temporary storage are simply skipped, so running it over the whole pipeline is safe.
@@ -116,7 +117,7 @@ in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set
 - Use `Pipeline.run(s)` to execute all stages (or pass a subset via `stages=` or a single stage name).
 - `run_stage` supports `force_setup` and `force_run` flags to re-run setup or run even when checks say done.
 
-### Submitting to SLURM (`cli.py submit`)
+### Submitting to SLURM (`wrf-massive submit`)
 The CLI's `submit` command submits each requested stage of each simulation as its own SLURM job.
 Each simulation is submitted independently, so submitting many simulations at once can run many
 jobs for the same stage in parallel.
@@ -147,6 +148,68 @@ Additionally,
 - Stages and Pipelines use a simple `.done` marker convention: if a stage's work directory contains a file named
   `.done`, the pipeline's `run_stage` will skip the stage.
 - To skip the entire simulation, create a `.done` file in `s.sim_dir` (the Pipeline checks for this as well).
+
+## Workspaces
+
+A workspace holds everything specific to one study. Create one with `wrf-massive init <dir>` (default: current
+directory); existing files are only overwritten with `--force`. The template contains:
+
+| File | Purpose |
+|---|---|
+| `env.yaml` | Machine-specific settings: paths to WPS/WRF, which pipeline to use, log level. |
+| `pipeline.py` | Assembles stages into named pipelines (`p_default`: CERRA + ERA5 from CDS, WPS, WRF). |
+| `simulations.py` | Defines `Simulation` objects (period, warmup, namelist settings, sim dir, area). |
+| `namelist.tmpl.wps`, `namelist.tmpl.input` | Jinja2 templates for the WPS/WRF namelists, incl. the domain. |
+| `myoutfields.txt` | Additional WRF output fields. |
+| `slurm.job.sh` | Job script for `wrf-massive submit`. |
+
+The template is a starting point and does not run as is: set the WPS/WRF paths in `env.yaml`, set up CDS credentials
+(`~/.cdsapirc` or `CDSAPI_URL`/`CDSAPI_KEY`) and adapt the domain and simulations to your study.
+
+### The env file
+The env file contains the settings that differ between machines:
+- `pipeline` (required) — name of the pipeline variable in `pipeline.py` to use, e.g. `p_default`.
+- `log_level` (optional) — `debug`, `info` (default), `warning`, `error` or `critical`.
+- anything else your `pipeline.py` needs, e.g. the `wps` and `wrf` groups of the template.
+
+The directory containing the env file is the workspace root. The CLI looks for the env file in the current
+directory and its parents, so you can run it from anywhere inside the workspace, e.g. from a simulation dir.
+Relative paths in `pipeline.py` and in the env file are relative to the workspace root; paths given on the command
+line are relative to where you run the command.
+
+To work on several machines, keep one env file per machine (e.g. `env_laptop.yaml`, `env_hpc.yaml`) and select it with
+`--env-file`/`-e` or the `WRF_MASSIVE_ENV_FILE` environment variable (`env.yaml` by default):
+
+```bash
+wrf-massive -e env_hpc.yaml submit -j slurm.job.sh test_1
+```
+
+Alternatively, symlink the active one to `env.yaml` (`ln -sf env_hpc.yaml env.yaml`).
+
+In `pipeline.py`, read the settings with `load_env()`, which returns the env file the CLI was started with:
+
+```python
+from wrf_massive.workspace import load_env
+
+env = load_env()
+wps = WPSStage(work_dir="2_wps", **env["wps"], ...)
+```
+
+### Commands
+
+```bash
+wrf-massive init my_study                        # create a new workspace
+wrf-massive init-sims simulations.py sim_test   # create simulation dirs from variable `sim_test`
+wrf-massive run test_1                           # run all stages locally
+wrf-massive run --stages wps,wrf test_1          # run a subset of stages
+wrf-massive teardown --stages wrf test_1         # move results back from temporary storage
+wrf-massive submit -j slurm.job.sh test_1        # submit each stage as its own SLURM job
+wrf-massive --debug submit -j slurm.job.sh test_1   # print the sbatch commands instead of submitting
+```
+
+`init-sims` creates the simulation dirs in the workspace root unless `--root` is given. `submit` calls the job script
+with the stage name and simulation dir as arguments, so the script should run `wrf-massive run --stages=$1 $2`. The
+jobs use the same env file as the `submit` call.
 
 ## Implementing a new Stage
 
@@ -191,9 +254,8 @@ Additionally,
 Pipeline creation example:
 
 ```python
-    p = Pipeline(prep=PrepStage(work_dir="prep"), runwrf=RunWRFStage(work_dir="wrf"))
-    p.run(sim)
-
+p = Pipeline(prep=PrepStage(work_dir="prep"), runwrf=RunWRFStage(work_dir="wrf"))
+p.run(sim)
 ```
 
 When calling `p.run`, if `sim.sim_dir/.done` exists the whole simulation is skipped. 

@@ -20,7 +20,7 @@ use case).
 - Python: `>=3.12`.
 - `wrf-python` needs a working `gfortran`/gcc toolchain to build.
 - Formatting: `black` (line-length 120, see `pyproject.toml`); submodules are excluded from formatting.
-- `README.md` files (top-level, `src/wrf_massive/`, `workspaces/example/`) are user-facing: describe
+- `README.md` files (top-level, `src/wrf_massive/`, `src/wrf_massive/stages/`) are user-facing: describe
   what a feature does and how to use it, not the underlying implementation mechanics. Implementation
   details belong here in `CLAUDE.md` instead.
 
@@ -30,7 +30,8 @@ use case).
 src/wrf_massive/        # generic, project-agnostic orchestration package
   base.py                # Stage / Simulation / Pipeline / Resources core abstractions
   config.py              # BaseYAMLConfig: pydantic <-> yaml (de)serialization helpers
-  cli.py                  # get_pipeline_cli(pipeline) -> click.Group (init_sims/run/teardown/submit)
+  cli.py                  # `wrf-massive` click group `main` (init/init-sims/run/teardown/submit); console script
+  workspace.py            # env file discovery, Workspace (root, env, lazy pipeline), load_env(), init_workspace()
   log.py                  # logging helpers
   tmp_dir.py              # move a stage's work dir to a fast tmp location (e.g. ramdisk) and back
   stages/
@@ -40,19 +41,44 @@ src/wrf_massive/        # generic, project-agnostic orchestration package
     postproc/             # postprocessing of WRF output (e.g. Cn2)
     misc/                 # small utility stages (array.py, done.py, gc.py)
     utils.py               # render_template, run_cmd_logged, namelist template loader/getter
-workspaces/example/      # a concrete, documented example workspace (the reference for how to build your own)
-  pipeline.py             # assembles Stage instances into named Pipeline(s) (p_default, p_hpc, ...)
-  simulations.py          # defines Simulation objects (begin/end/warmup/settings/sim_dir)
-  env_dev.yaml/env_hpc.yaml  # machine-specific paths/settings, copied to env.yaml before use
-  namelist.tmpl.wps/.input   # Jinja2 templates for WPS/WRF namelists
-  cli.py                  # thin wrapper: loads env.yaml, picks pipeline, calls get_pipeline_cli
+  templates/workspace/    # files copied by `wrf-massive init` (the reference for how to build a workspace)
+    env.tmpl.yaml          # -> env.yaml: WPS/WRF paths (placeholders), pipeline name, log_level
+    gitignore              # -> .gitignore
+    pipeline.py            # p_default: CERRA + ERA5 via PullCdsStage -> WPS -> WRF -> MarkDone
+    simulations.py         # sim_test (1 day, NL domain, area set for the ERA5 crop)
+    namelist.tmpl.wps/.input, myoutfields.txt, slurm.job.sh
 submodules/WRF, submodules/WPS   # optional NCAR submodules (git submodule update --init --recursive)
 tests/                    # pytest; fixtures.py has StageA/StageB/StageFail/StageReadsOther test doubles
                           #   + simple_simulation fixture
 ```
 
 `wrf_massive` itself must stay workspace-agnostic — project-specific config, templates and pipelines belong in a
-`workspaces/<name>` directory (see `workspaces/example` as the canonical template).
+workspace outside the package, created with `wrf-massive init` (`templates/workspace` is the canonical template).
+
+## Workspaces and the CLI (`workspace.py`, `cli.py`)
+
+- **Root discovery**: `find_env_file(value)` uses `value` if it exists relative to the cwd (or is absolute), else
+  searches the cwd's parents for `<parent>/<value>`. The root is the env file's parent via `os.path.abspath`, *not*
+  `.resolve()`, so the common `env.yaml -> env_<machine>.yaml` symlink doesn't move the root.
+- **Activation** (`Workspace.activate`): configures logging from the env's `log_level` (default `info`; root logger
+  level + `basicConfig`, which is a no-op if handlers exist), `os.chdir(root)` and puts the root first on `sys.path`.
+  The chdir is what keeps all relative paths in workspaces (`namelist_tmpl_path`, env paths, `TPathExists`
+  validation at import time) working from any subdir. `pipeline.py` is then imported by file path and registered as
+  `sys.modules["pipeline"]`; `init-sims` imports the sims module the same way. `_active` holds the activated
+  workspace and `load_env()` returns its env (fallback outside the CLI: `$WRF_MASSIVE_ENV_FILE` or `env.yaml`
+  searched from the cwd). Errors while importing `pipeline.py` become a `WorkspaceError` naming the env file.
+- **Click ordering**: a group callback runs *before* the subcommand's args are parsed/validated. So `main` only stores
+  `CliState(env_file, debug)` in `ctx.obj`; each command first makes its path args absolute against the invocation
+  cwd (`os.path.abspath`), then touches `state.workspace`/`state.pipeline`, which activates (chdirs) lazily. This also
+  keeps `--help` and `init` working outside a workspace. Sim dirs are therefore absolute inside commands.
+- **`submit`** runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_FILE] = <abs env file>`; sbatch exports the
+  environment by default, so `wrf-massive run` in the job picks up the same env file. `--debug` prints the command
+  instead (dry run) and sets the `wrf_massive` logger to DEBUG.
+- **`init`** copies every file in `templates/workspace` via `importlib.resources`, renaming per `TEMPLATE_RENAMES`
+  (`env.tmpl.yaml` so the template dir is never mistaken for a workspace by the upward env search, `gitignore` as in
+  the stage dirs). Template files carry no SPDX headers (they end up in users' workspaces); REUSE.toml covers them.
+  `tests/test_init.py` checks the template imports and submits (dry run) once its env paths point to existing dirs —
+  keep it passing when changing the template or stage signatures.
 
 ## Core abstractions (`src/wrf_massive/base.py`)
 
@@ -180,15 +206,17 @@ vs `reanalysis-*-single-levels`).
 ## Running things
 
 ```bash
-uv sync                                   # install/refresh env
-cd workspaces/example
-cp env_dev.yaml env.yaml                  # pick a machine profile
-uv run cli.py init_sims simulations.py sim_test   # render sim_dir + namelists from a Simulation object
-uv run cli.py run ./test_1                        # run all stages locally
-uv run cli.py run --stages wps ./test_1           # run a subset of stages
-uv run cli.py teardown --stages wps ./test_1      # force work dirs back from tmp storage (--all ignores globs)
-uv run cli.py submit --jobfile slurm_hpc.sh ./test_1              # submit each stage as its own sbatch job
+uv sync                                           # install/refresh env (installs the `wrf-massive` command)
+wrf-massive init /path/to/my_ws && cd /path/to/my_ws   # new workspace from the template; set paths in env.yaml
+wrf-massive init-sims simulations.py sim_test     # create sim_dir test_1 (in the workspace root) from a Simulation
+wrf-massive run test_1                            # run all stages locally
+wrf-massive run --stages wps test_1               # run a subset of stages
+wrf-massive teardown --stages wps test_1          # force work dirs back from tmp storage (--all ignores globs)
+wrf-massive -e env_hpc.yaml submit -j slurm.job.sh test_1   # submit each stage as its own sbatch job
 ```
+
+Without a Fortran compiler `wrf-python` can't be built; `uv sync --no-install-package wrf-python` installs the rest
+(everything except `stages/postproc` and `plotting` works, `tests/test_postproc_stage.py` then can't be collected).
 
 Tests: `uv run pytest`. See `tests/fixtures.py` for the `StageA`/`StageB` test-double pattern and
 `simple_simulation` fixture used to exercise `Stage`/`Pipeline` behavior without real WRF/WPS binaries.
@@ -198,8 +226,8 @@ Tests: `uv run pytest`. See `tests/fixtures.py` for the `StageA`/`StageB` test-d
 - New stages: subclass `Stage`, implement all four abstract methods, use `TPath`/`TPathExists`/`TPathMkdir` for path
   fields, keep it a `pydantic.BaseModel` (so it's YAML-serializable and CLI/pipeline-composable like existing
   stages), and prefer a `.done`-marker-friendly, idempotent `setup()`/`run()`.
-- Keep `wrf_massive` project-agnostic; anything specific to a particular WRF study/domain goes in a
-  `workspaces/<name>` directory, not in `src/wrf_massive`.
+- Keep `wrf_massive` project-agnostic; anything specific to a particular WRF study/domain goes in a workspace
+  (created with `wrf-massive init`), not in `src/wrf_massive`.
 - Don't hand-roll subprocess calls; use `stages/utils.py::run_cmd_logged` (handles logging + non-zero exit) and
   `render_template`/`load_wps_wrf_namelist_tmpl` for Jinja2 rendering.
 - Match the existing `forcing` stage naming/shape (`Pull<Source>Stage`) if adding new forcing-data stages, so they

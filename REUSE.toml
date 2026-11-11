@@ -20,10 +20,8 @@ path = [
     ".gitmodules", 
     ".python-version", 
     "**/gitignore",
-    "workspaces/example/CERRA_files.txt",
-    "workspaces/example/myoutfields.txt",
-    "workspaces/example/namelist.tmpl.input",
-    "workspaces/example/namelist.tmpl.wps",
+    # Workspace template: no headers, since `wrf-massive init` copies these files into users' own workspaces
+    "src/wrf_massive/templates/workspace/**",
 ]
 SPDX-FileCopyrightText = "2026 Maximilian Pierzyna"
 SPDX-License-Identifier = "GPL-3.0-or-later"
