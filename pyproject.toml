@@ -88,6 +88,17 @@ filename = "CITATION.cff"
 search = "/tree/v{current_version}"
 replace = "/tree/v{new_version}"
 
+# The install instructions in README.md point to the latest release tag
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "wrf-massive@v{current_version}"
+replace = "wrf-massive@v{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "git -C submodules/wrf-massive checkout v{current_version}"
+replace = "git -C submodules/wrf-massive checkout v{new_version}"
+
 [dependency-groups]
 dev = [
     "black>=26.3.1",

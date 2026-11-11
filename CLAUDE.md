@@ -19,6 +19,9 @@ use case).
 - Package manager: `uv` (`uv sync` to install, `uv run <cmd>` to run anything in the managed env).
 - Python: `>=3.12`.
 - `wrf-python` needs a working `gfortran`/gcc toolchain to build.
+- Users install wrf-massive from a GitHub tag (README "Installation"); `bump-my-version` updates those tags in
+  README.md. The pip example also pins `wrf-python` to the tag in `[tool.uv.sources]` (pip ignores uv sources) —
+  update it there by hand when that pin changes.
 - Formatting: `black` (line-length 120, see `pyproject.toml`); submodules are excluded from formatting.
 - `README.md` files (top-level, `src/wrf_massive/`, `src/wrf_massive/stages/`) are user-facing: describe
   what a feature does and how to use it, not the underlying implementation mechanics. Implementation

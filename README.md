@@ -6,81 +6,134 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # WRF Massive
 
-This project provides tooling to orchestrate large-scale WRF (Weather Research and Forecasting) simulation using Slurm. 
-The main goal is to make it easy to define, stage, submit, and monitor many WRF runs (including pre/post processing steps).
-The framework is designed to be modular, which allows you to test the entire pipeline on a laptop or workstation and
-scale to HPC clusters with minimal changes.
+WRF Massive orchestrates large numbers of WRF (Weather Research and Forecasting) simulations, from downloading the
+forcing data through WPS and WRF to postprocessing, on a laptop or on an HPC cluster with SLURM. You describe the
+simulations and the steps they go through in a small Python project (a *workspace*), and the `wrf-massive` command
+creates, runs and submits them. The same workspace can be tested locally and then scaled to a cluster by changing
+only machine-specific settings.
 
-Key points:
-- Orchestration: the code manages job creation, staging of input/output, submission to Slurm.
-- Extensible: the project is structured so that general-purpose code lives in the `wrf_massive` package, while
-  project-specific configuration and templates live in separate workspaces.
-
-More specifically,
-- The orchestration code and core CLI are implemented in `wrf_massive`.
-  - `wrf_massive` is designed to be as project/workspace-agnostic as possible. 
-    It contains the main logic to configure runs, produce Slurm job scripts, submit them and collect outputs.
-- Concrete projects/simulation runs live in separate workspaces, which `wrf-massive init` creates from a template
-  with sample configuration, namelist templates and a job script.
-- Optionally, WRF and WPS are included as submodules in `submodules`. 
-  You can pull them using `git submodule update --init --recursive` and build them according to their own instructions.
+Features:
+- **Stages**: each step in the WRF processing chain is a `Stage` defined in Python: forcing download, WPS, WRF, 
+  and postprocessing (e.g. $C_n^2$).
+- **Pipelines**: pipelines define the order in which stages are executed to process a simulation. They can differ per machine.
+- **Workspaces**: different WRF studies (e.g., different domains) can be kept isolated in different workspaces, 
+  each with their own pipelines and stages.
+- **SLURM submission**: every stage of every simulation becomes a SLURM job with its own resources (nodes, tasks,
+  memory, walltime), chained by dependencies. Concurrency can be capped per stage, e.g. for downloads.
+- **Restartable**: finished stages are marked as done and skipped on re-runs.
+- **Fast storage**: stages can run in temporary directories, e.g., a ramdisk or scratch filesystem. 
+  Results are moved back automatically when the stage finishes.
 
 > [!NOTE]
 > WRF Massive was created to generate the WRF-based $C_n^2$ training data of the
 > [OTProf](https://github.com/mpierzyna/otprof) deep learning project (1 year of CERRA-forced simulations for the
 > Netherlands and the Canary Islands). The repository [`otprof-wrf`](https://github.com/mpierzyna/otprof-wrf) contains
-> these production workspaces and shows how wrf-massive is used at scale. For a template, which needs modification for
-> your own setup, create a workspace with `wrf-massive init`.
+> these production workspaces and shows how wrf-massive is used at scale.
 
-## Submodules vs external WRF/WPS
+## Requirements
 
-- Using the included submodules (optional) to build WRF/WPS inside this repository:
-  - Clone the NCAR repos using `git submodule update --init --recursive`
-  - Compile and setup WRF as per NCAR's instructions.
+- Python 3.12 or newer.
+- A Fortran compiler (e.g. `gfortran` from a working gcc installation): the `wrf-python` dependency is built from
+  source during installation.
+- Compiled WPS and WRF, and the WPS static geographical data. wrf-massive orchestrates them but does not build them;
+  see [WRF and WPS](#wrf-and-wps).
+- For the forcing data: a [CDS account](https://cds.climate.copernicus.eu/how-to-api) with its credentials in
+  `~/.cdsapirc`, or an [rclone](https://rclone.org) remote with mirrored CERRA files.
+- Optional: SLURM, to schedule pipeline stages with assigned ressources. Without SLURM, each stage just executes
+  sequentially in the terminal, using all available ressources.
 
-- Using an external WRF/WPS installation (recommended for reproducible or managed HPC installs):
-  - If you already have a system-wide or separately-maintained WRF/WPS installation, you do not need the submodules. 
-    Point this orchestration tool to your existing installation in your workspace's `env.yaml`. This repository only
-    orchestrates runs and does not require WRF/WPS to be compiled inside it.
+## Installation
 
+wrf-massive is installed from GitHub into your own project, at a release tag.
 
-## Workspaces
-
-A workspace is a directory with the configuration of one study: an env file with machine-specific settings, the
-pipeline, the simulations and the WPS/WRF namelist templates. Create one with
-
-```bash
-wrf-massive init my_study
-```
-
-and see the [developer guide](src/wrf_massive/README.md#workspaces) for what the files do.
-
-## Environment setup
-
-This package is managed with the uv package manager. All dependencies are listed in `pyproject.toml`.
-To use wrf-python, a functional `gfortran` compiler needs to be installed (typically by having a working gcc installation).
-Set up the environment by running
+### With uv (recommended)
 
 ```bash
-uv sync
+uv init my_study && cd my_study   # new project, unless you already have one
+uv add "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.0.0"
+uv run wrf-massive --help
 ```
 
-Alternatively, just running commands with `uv run` will always make sure the environment is up to date.
+uv also installs the `wrf-python` version that wrf-massive pins (a git tag of NCAR's repository). Prefix the commands
+below with `uv run`, or activate the environment with `source .venv/bin/activate`.
 
+### With pip
 
-## Quick start (high level)
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install "wrf-python @ git+https://github.com/NCAR/wrf-python@v1.4.2" \
+            "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.0.0"
+wrf-massive --help
+```
 
-1. Prepare WRF/WPS.
-2. Create a workspace with `wrf-massive init my_study` and adapt `env.yaml`, `pipeline.py`, `simulations.py` and the
-   namelist templates to your study.
-3. Create, run and submit simulations with the `wrf-massive` CLI from anywhere inside the workspace
-   (`wrf-massive --help` lists the commands):
+`wrf-python` is installed from its git tag explicitly, because pip would otherwise use the older release on PyPI.
+
+### As a git submodule
+
+To work on wrf-massive alongside your project (as [`otprof-wrf`](https://github.com/mpierzyna/otprof-wrf) does), add
+it as a submodule and install it in editable mode:
+
+```bash
+git submodule add https://github.com/mpierzyna/wrf-massive submodules/wrf-massive
+git -C submodules/wrf-massive checkout v2.0.0
+uv add --editable ./submodules/wrf-massive
+```
+
+## Getting started
+
+1. Create a workspace in your project, here in the directory `my_domain`:
+
+   ```bash
+   wrf-massive init my_domain && cd my_domain
+   ```
+
+2. Adapt it to your study: the WPS/WRF paths in `env.yaml`, the domain in `namelist.tmpl.wps` and
+   `namelist.tmpl.input`, the pipeline in `pipeline.py` and the simulations in `simulations.py`. Check the domain
+   before running anything:
+
+   ```bash
+   wrf-massive plot domain-nml namelist.tmpl.wps   # saves domains.png
+   ```
+
+3. Create the simulation directories, then run them locally or submit them to SLURM:
 
    ```bash
    wrf-massive init-sims simulations.py sim_test   # create simulation dir test_1
    wrf-massive run test_1                           # run all stages locally
    wrf-massive submit -j slurm.job.sh test_1        # or submit each stage as SLURM job
    ```
+
+`wrf-massive --help` lists all commands, and `wrf-massive <command> --help` their options.
+
+## Workspaces
+
+A workspace is a directory with the configuration of one study: an env file with machine-specific settings, the
+pipeline, the simulations and the WPS/WRF namelist templates. The directory containing the env file (`env.yaml` by
+default) is the workspace root, so the CLI works from any subdirectory. To work on several machines, keep one env file
+per machine and select it with `wrf-massive --env-file env_hpc.yaml ...`.
+
+See the [developer guide](src/wrf_massive/README.md#workspaces) for what the files do and how to write your own
+stages.
+
+## WRF and WPS
+
+wrf-massive does not compile WRF or WPS. Point your workspace's `env.yaml` to existing installations, e.g. a
+system-wide or module-provided install on your cluster (recommended for reproducible HPC runs) or your own build
+following NCAR's instructions.
+
+For development, this repository includes WRF and WPS as optional submodules in `submodules/`. Pull them with
+`git submodule update --init --recursive` and build them according to their own instructions.
+
+## Development
+
+```bash
+git clone https://github.com/mpierzyna/wrf-massive && cd wrf-massive
+uv sync          # install the package and its development dependencies
+uv run pytest    # run the tests
+```
+
+Releases are made with `uvx bump-my-version bump patch|minor|major`, which updates the version, the citation
+metadata and the install instructions in this README, then commits and tags.
 
 ## How to cite
 When using wrf-massive, please cite it either using the `./CITATION.cff` file or the following information:
