@@ -249,6 +249,4 @@ class PullCdsStage(Stage):
             self._split_monthly(s, req, monthly)
 
     def is_done(self, s: Simulation) -> bool:
-        return all(
-            self._times_complete(s, req, times) for times in self._periods(s).values() for req in self.requests
-        )
+        return all(self._times_complete(s, req, times) for times in self._periods(s).values() for req in self.requests)

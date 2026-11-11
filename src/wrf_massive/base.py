@@ -80,7 +80,6 @@ class Resources(pydantic.BaseModel):
 
 
 class Stage(pydantic.BaseModel, abc.ABC):
-
     work_dir: TPath  # if relative, relative to sim_dir
     resources: Resources | None = None  # resources required by this stage
 
@@ -368,7 +367,7 @@ class Pipeline:
         # Run stages
         n = len(stages)
         for i, name in enumerate(stages):
-            logger.info(f"Entering stage #{i+1}/{n}: {name}")
+            logger.info(f"Entering stage #{i + 1}/{n}: {name}")
             self.run_stage(s=s, name=name, force_setup=force_setup, force_run=force_run)
 
     def teardown_stage(self, s: Simulation, name: str, all_files: bool = False) -> bool:
@@ -397,7 +396,7 @@ class Pipeline:
         # Tear down stages
         n = len(stages)
         for i, name in enumerate(stages):
-            logger.info(f"Tearing down stage #{i+1}/{n}: {name}")
+            logger.info(f"Tearing down stage #{i + 1}/{n}: {name}")
             if self.teardown_stage(s=s, name=name, all_files=all_files):
                 logger.info(f"Stage '{name}' moved back from tmp storage.")
 
