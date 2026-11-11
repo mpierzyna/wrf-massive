@@ -94,18 +94,22 @@ sample() {
   sample_disk "$now"
 }
 
+# Only flag the stop and cut the sleep short: a sample in progress is completed (bash runs the trap after the current
+# command), so both CSVs always get the same rows, plus a last sample after the loop.
+STOP=
 stop() {
+  STOP=1
   [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
-  sample
-  exit 0
 }
 trap stop TERM INT
 
 echo "timestamp,elapsed_s,used_mib,process_mib,peak_mib,limit_mib,source" >"$MEM_CSV"
 echo "timestamp,elapsed_s,size_kib" >"$DISK_CSV"
-while true; do
+while [ -z "$STOP" ]; do
   sample
   sleep "$INTERVAL" &
   SLEEP_PID=$!
+  [ -n "$STOP" ] && kill "$SLEEP_PID" 2>/dev/null  # stopped during the sample, before the sleep was started
   wait "$SLEEP_PID"
 done
+sample

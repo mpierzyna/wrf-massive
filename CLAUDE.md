@@ -86,7 +86,8 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
 - **Monitoring** (`monitor.py`, `monitor.sh`): with `$WRF_MASSIVE_MONITOR=<s>`, `run` wraps each stage (one
   `p.run(s, stages=[name])` per stage) in `monitor()`, which starts the bundled `monitor.sh` as a child process (so
   it sits in the SLURM job's cgroup), waits for its first sample (its TERM trap is set by then) and terminates it
-  afterwards (the trap writes a last sample). Memory: job-level cgroup `job_<SLURM_JOB_ID>` found via
+  afterwards. The trap only sets a flag and kills the `sleep`; the loop then finishes the current sample and writes a
+  last one, so both CSVs always have the same rows. Memory: job-level cgroup `job_<SLURM_JOB_ID>` found via
   `/proc/self/cgroup` (v2: `memory.current`, `anon` of `memory.stat`, `memory.peak`, `memory.max`; v1:
   `memory.usage_in_bytes`, `total_rss`, `memory.max_usage_in_bytes`, `memory.limit_in_bytes`), else `/proc/meminfo`
   (`source=node`). Disk: `du -s -k -D <stage work dir>` (`-D` follows a work dir symlinked to tmp storage, but no
