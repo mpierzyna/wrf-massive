@@ -7,16 +7,15 @@
 from __future__ import annotations
 
 import pathlib
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, Sequence, Tuple
 
-import click
 import xarray as xr
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
 
 
-def plot_domain(
+def plot_domain_geo_em(
     geo_em_path: str | pathlib.Path,
     ax: "Axes | None" = None,
     cmap: str = "terrain",
@@ -87,33 +86,22 @@ def plot_domain(
     return ax
 
 
-@click.group()
-def cli():
-    """Plotting utilities for WRF/WPS artifacts."""
+def plot_domain_nml(namelist: str | pathlib.Path | None, args: Sequence[str] = (), save_file: str = "domains.png"):
+    """Plot the domain layout of a WPS namelist without running geogrid.
 
+    Runs `plot_domains.py` from WPS v4.7.0 (Anthony Islas, 2025; vendored in `wrf_massive/third_party/`) on
+    `namelist`, saving to `save_file` when no interactive display is available. `args` are further command line
+    arguments of the script, e.g. `["--info", "15"]`; they come last, so they override `namelist`/`save_file`
+    (`-n`/`-s`). Without `namelist`, only `args` are passed (e.g. `["--help"]`). The script only has a `__main__`
+    block, so it is run as a module with the arguments in `sys.argv`.
+    """
+    import runpy
+    import sys
 
-@cli.command("domain")
-@click.argument("geo_em_path", type=click.Path(exists=True, dir_okay=False))
-@click.option("--cmap", default="terrain", show_default=True, help="Matplotlib colormap for terrain height.")
-@click.option("--coastlines/--no-coastlines", default=True, show_default=True, help="Draw coastlines.")
-@click.option("--coastline-resolution", type=click.Choice(["10m", "50m", "110m"]), default="10m", show_default=True)
-@click.option("--gridlines/--no-gridlines", default=True, show_default=True, help="Draw labelled lat/lon gridlines.")
-def domain_cmd(geo_em_path, cmap, coastlines, coastline_resolution, gridlines):
-    """Plot the terrain of a WPS domain from its GEO_EM_PATH (a geo_em.dNN.nc file)."""
-
-    geo_em_path = pathlib.Path(geo_em_path)
-    output = geo_em_path.with_name(geo_em_path.stem + "_domain.png")
-
-    plot_domain(
-        geo_em_path,
-        cmap=cmap,
-        add_coastlines=coastlines,
-        coastline_resolution=coastline_resolution,
-        add_gridlines=gridlines,
-        savefig=output,
-    )
-    click.echo(f"-> Saved domain plot to {output}")
-
-
-if __name__ == "__main__":
-    cli()
+    defaults = [] if namelist is None else ["-n", str(namelist), "-s", str(save_file)]
+    argv = sys.argv
+    sys.argv = ["wrf-massive plot domain-nml", *defaults, *args]
+    try:
+        runpy.run_module("wrf_massive.third_party.plot_domains", run_name="__main__")
+    finally:
+        sys.argv = argv

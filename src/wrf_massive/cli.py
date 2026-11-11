@@ -370,5 +370,68 @@ def submit(state: CliState, stages: str | None, jobfile: str, dep_job: int | Non
             )
 
 
+@main.group()
+def plot():
+    """Plot WPS domains. Works without a workspace."""
+
+
+@plot.command()
+@click.argument("geo_em_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--cmap", default="terrain", show_default=True, help="Matplotlib colormap for terrain height.")
+@click.option("--coastlines/--no-coastlines", default=True, show_default=True, help="Draw coastlines.")
+@click.option("--coastline-resolution", type=click.Choice(["10m", "50m", "110m"]), default="10m", show_default=True)
+@click.option("--gridlines/--no-gridlines", default=True, show_default=True, help="Draw labelled lat/lon gridlines.")
+def domain_geo_em(geo_em_path: str, cmap: str, coastlines: bool, coastline_resolution: str, gridlines: bool):
+    """Plot the terrain of a domain from GEO_EM_PATH (a geo_em.dNN.nc file written by geogrid).
+
+    The plot is saved next to the file as `<name>_domain.png`.
+    """
+    from wrf_massive.plotting import plot_domain_geo_em  # imported lazily: plotting pulls in xarray/matplotlib
+
+    geo_em_path = pathlib.Path(geo_em_path)
+    output = geo_em_path.with_name(geo_em_path.stem + "_domains.png")
+    plot_domain_geo_em(
+        geo_em_path,
+        cmap=cmap,
+        add_coastlines=coastlines,
+        coastline_resolution=coastline_resolution,
+        add_gridlines=gridlines,
+        savefig=output,
+    )
+    click.echo(f"-> Saved domain plot to {output}")
+
+
+@plot.command(
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+    add_help_option=False,  # `--help` is handled below, to include the options of plot_domains.py
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def domain_nml(args: Tuple[str, ...]):
+    """Plot the domain layout of a WPS namelist without running geogrid (`--help` for options).
+
+    Usage: `wrf-massive plot domain-nml NAMELIST [OPTIONS]`, e.g. `wrf-massive plot domain-nml namelist.tmpl.wps`.
+    Runs `plot_domains.py` from WPS v4.7.0 (Anthony Islas, 2025) on NAMELIST, saving to `domain.png` unless
+    `--save_file` is given. OPTIONS are passed on to the script.
+    """
+    from wrf_massive.plotting import plot_domain_nml  # imported lazily: plotting pulls in xarray/matplotlib
+
+    if not args or args[0] in ("-h", "--help"):
+        click.echo(
+            "Usage: wrf-massive plot domain-nml NAMELIST [OPTIONS]\n\n"
+            "Plot the domain layout of NAMELIST (a namelist.wps or namelist.tmpl.wps) without running geogrid,\n"
+            "using plot_domains.py of WPS v4.7.0 (Anthony Islas, 2025). The plot is saved to domain.png unless\n"
+            "--save_file is given. OPTIONS of plot_domains.py (-n/--namelist is set from NAMELIST):\n"
+        )
+        if not args:
+            raise click.UsageError("Missing argument 'NAMELIST'.")
+        plot_domain_nml(None, ["--help"])
+        return
+
+    namelist, *options = args
+    if not pathlib.Path(namelist).is_file():
+        raise click.UsageError(f"NAMELIST '{namelist}' is not a file. It must be the first argument.")
+    plot_domain_nml(namelist, options)
+
+
 if __name__ == "__main__":
     main()

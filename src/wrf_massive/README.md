@@ -211,6 +211,21 @@ wrf-massive --debug submit -j slurm.job.sh test_1   # print the sbatch commands 
 with the stage name and simulation dir as arguments, so the script should run `wrf-massive run --stages=$1 $2`. The
 jobs use the same env file as the `submit` call.
 
+### Plotting domains
+`wrf-massive plot` plots WPS domains, either from the namelist before running geogrid or from the geogrid output.
+It works without a workspace:
+
+```bash
+wrf-massive plot domain-nml namelist.tmpl.wps            # expected domain layout from a (template) namelist.wps
+wrf-massive plot domain-nml namelist.tmpl.wps --info 15  # further options of plot_domains.py, see --help
+wrf-massive plot domain-geo-em 2_wps/geo_em.d01.nc        # terrain of the geogrid output
+```
+
+`domain-nml` runs [`plot_domains.py`](https://github.com/wrf-model/WPS/blob/release-v4.7.0/util/plot_domains.py)
+from WPS v4.7.0 by Anthony Islas (2025), included unchanged in `wrf_massive/third_party/`, except for the added
+copyright information. It saves the plot to `--save_file` (default `domain.png`) when no interactive display is
+available, and opens a window otherwise. `domain-geo-em` saves the plot next to the file as `<name>_domain.png`.
+
 ## Implementing a new Stage
 
 1) Subclass `Stage` and implement the abstract methods. Example minimal skeleton:

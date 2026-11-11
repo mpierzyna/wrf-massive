@@ -30,9 +30,11 @@ use case).
 src/wrf_massive/        # generic, project-agnostic orchestration package
   base.py                # Stage / Simulation / Pipeline / Resources core abstractions
   config.py              # BaseYAMLConfig: pydantic <-> yaml (de)serialization helpers
-  cli.py                  # `wrf-massive` click group `main` (init/init-sims/run/teardown/submit); console script
+  cli.py                  # `wrf-massive` click group `main` (init/init-sims/run/teardown/submit, plot group); console script
   workspace.py            # env file discovery, Workspace (root, env, lazy pipeline), load_env(), init_workspace()
   log.py                  # logging helpers
+  plotting.py             # plot_domain_geo_em (geo_em terrain), plot_domain_nml (runs third_party/plot_domains.py)
+  third_party/plot_domains.py  # unchanged copy of WPS v4.7.0 util/plot_domains.py + copyright info (Anthony Islas 2025, MIT)
   tmp_dir.py              # move a stage's work dir to a fast tmp location (e.g. ramdisk) and back
   stages/
     forcing/              # download/prepare forcing data for WPS (currently: CERRA via rclone)
@@ -70,7 +72,8 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
 - **Click ordering**: a group callback runs *before* the subcommand's args are parsed/validated. So `main` only stores
   `CliState(env_file, debug)` in `ctx.obj`; each command first makes its path args absolute against the invocation
   cwd (`os.path.abspath`), then touches `state.workspace`/`state.pipeline`, which activates (chdirs) lazily. This also
-  keeps `--help` and `init` working outside a workspace. Sim dirs are therefore absolute inside commands.
+  keeps `--help`, `init` and the `plot` group working outside a workspace. The `plot` commands import `plotting`
+  inside the command (xarray/matplotlib add ~0.3 s to every CLI start otherwise). Sim dirs are therefore absolute inside commands.
 - **`submit`** runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_FILE] = <abs env file>`; sbatch exports the
   environment by default, so `wrf-massive run` in the job picks up the same env file. `--debug` prints the command
   instead (dry run) and sets the `wrf_massive` logger to DEBUG.
@@ -228,6 +231,11 @@ Tests: `uv run pytest`. See `tests/fixtures.py` for the `StageA`/`StageB` test-d
   stages), and prefer a `.done`-marker-friendly, idempotent `setup()`/`run()`.
 - Keep `wrf_massive` project-agnostic; anything specific to a particular WRF study/domain goes in a workspace
   (created with `wrf-massive init`), not in `src/wrf_massive`.
+- `src/wrf_massive/third_party/` holds vendored files that must stay unchanged except for the added copyright
+  information: don't edit or format them (black/ruff exclude the dir; attribution also in CITATION.cff). Wrap them
+  instead — `plotting.plot_domain_nml` runs `plot_domains.py` via `runpy.run_module(..., run_name="__main__")` with its
+  arguments in `sys.argv`, since the script only has a `__main__` block. Our defaults (`-n NAMELIST`, `-s domain.png`)
+  go before the user's options, so argparse's last-wins lets those override them.
 - Don't hand-roll subprocess calls; use `stages/utils.py::run_cmd_logged` (handles logging + non-zero exit) and
   `render_template`/`load_wps_wrf_namelist_tmpl` for Jinja2 rendering.
 - Match the existing `forcing` stage naming/shape (`Pull<Source>Stage`) if adding new forcing-data stages, so they

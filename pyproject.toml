@@ -35,13 +35,18 @@ dependencies = [
 
 [project.scripts]
 wrf-massive = "wrf_massive.cli:main"
-wrf-plot = "wrf_massive.plotting:cli"
 
 [tool.uv.sources]
 wrf-python = { git = "https://github.com/NCAR/wrf-python", tag = "v1.4.2" }
 
 [tool.ruff]
 line-length = 120  # align with pycharm
+extend-exclude = ["src/wrf_massive/third_party"]  # vendored, kept unchanged
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]  # match requires-python
+extend-exclude = "src/wrf_massive/third_party/"  # vendored, kept unchanged
 
 # Release: `uvx bump-my-version bump patch|minor|major` updates the files below, commits and tags
 [tool.bumpversion]

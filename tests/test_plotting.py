@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import pathlib
+
 import matplotlib
 
 matplotlib.use("Agg")  # headless, no display needed
@@ -10,7 +12,8 @@ import numpy as np
 import xarray as xr
 from click.testing import CliRunner
 
-from wrf_massive.plotting import cli, plot_domain
+from wrf_massive.cli import main
+from wrf_massive.plotting import plot_domain_geo_em
 
 
 def _make_geo_em(path):
@@ -29,20 +32,47 @@ def _make_geo_em(path):
     ds.to_netcdf(path)
 
 
-def test_plot_domain_returns_axes(tmp_path):
+def test_plot_domain_geo_em_returns_axes(tmp_path):
     geo = tmp_path / "geo_em.d01.nc"
     _make_geo_em(geo)
-    ax = plot_domain(geo, add_coastlines=False)
+    ax = plot_domain_geo_em(geo, add_coastlines=False)
     assert ax.collections  # pcolormesh drew a QuadMesh
     assert "geo_em.d01.nc" in ax.get_title()
     assert "2 km" in ax.get_title()  # DX=2000 m -> 2 km, 7x5 grid
 
 
-def test_cli_domain(tmp_path):
+def test_cli_domain_geo_em(tmp_path):
     geo = tmp_path / "geo_em.d01.nc"
     _make_geo_em(geo)
-    result = CliRunner().invoke(cli, ["domain", str(geo), "--no-coastlines"])
+    result = CliRunner().invoke(main, ["plot", "domain-geo-em", str(geo), "--no-coastlines"])
     assert result.exit_code == 0, result.output
     # output is auto-derived next to the geo_em file as <stem>_domain.png
     out = tmp_path / "geo_em.d01_domain.png"
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_cli_domain_nml(tmp_path, monkeypatch):
+    """`plot domain-nml NAMELIST` runs the vendored WPS plot_domains.py, saving to domain.png by default and passing
+    further options through."""
+    import wrf_massive
+    from cartopy.mpl.geoaxes import GeoAxes
+
+    monkeypatch.setattr(GeoAxes, "add_feature", lambda *args, **kwargs: None)  # no Natural Earth downloads
+    monkeypatch.chdir(tmp_path)
+    namelist = pathlib.Path(wrf_massive.__file__).parent / "templates" / "workspace" / "namelist.tmpl.wps"
+
+    result = CliRunner().invoke(main, ["plot", "domain-nml", str(namelist), "--hide_lines"])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "domain.png").stat().st_size > 0
+
+    result = CliRunner().invoke(main, ["plot", "domain-nml", str(namelist), "-s", "other.png"])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "other.png").exists()
+
+    result = CliRunner().invoke(main, ["plot", "domain-nml", "--help"])
+    assert result.exit_code == 0
+    assert "domain-nml NAMELIST" in result.output and "--info" in result.output  # ours + plot_domains.py options
+
+    result = CliRunner().invoke(main, ["plot", "domain-nml", "-i", "15"])
+    assert result.exit_code != 0
+    assert "must be the first argument" in result.output

@@ -24,3 +24,12 @@ references:
     license: MIT
     url: "https://github.com/HarishBaki/EU_SCORES_project"
     notes: "Vtable.CERRA, setup_wps.sh and run_wps.sh in src/wrf_massive/stages/wps/ are derived from this work."
+  - type: software
+    title: "WRF Preprocessing System (WPS), plot_domains.py"
+    authors:
+      - family-names: Islas
+        given-names: Anthony
+    year: 2025
+    license: MIT
+    url: "https://github.com/wrf-model/WPS/blob/release-v4.7.0/util/plot_domains.py"
+    notes: "src/wrf_massive/third_party/plot_domains.py is an unchanged copy of util/plot_domains.py of WPS v4.7.0, except for the added copyright information."
