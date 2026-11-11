@@ -23,7 +23,8 @@ use case).
 - Users install wrf-massive from a GitHub tag (README "Installation"); `bump-my-version` updates those tags in
   README.md. The pip example also pins `wrf-python` to the tag in `[tool.uv.sources]` (pip ignores uv sources) —
   update it there by hand when that pin changes.
-- Formatting: `black` (line-length 120, see `pyproject.toml`); submodules are excluded from formatting.
+- Formatting: `ruff format` (`uvx ruff format src tests`; line-length 120, see `[tool.ruff]` in `pyproject.toml`);
+  submodules and `third_party/` are excluded. The `[tool.black]` section only keeps black consistent if run by accident.
 - `README.md` files (top-level, `src/wrf_massive/`, `src/wrf_massive/stages/`) are user-facing: describe
   what a feature does and how to use it, not the underlying implementation mechanics. Implementation
   details belong here in `CLAUDE.md` instead.

@@ -336,6 +336,6 @@ In a workspace, define pipelines as module-level variables in `pipeline.py` (e.g
 - Use pydantic models for config fields and validation when possible.
 - Keep external side-effects (network, large downloads) behind `setup()` so tests can patch/mock them.
 - Be explicit about file names and markers to avoid accidental collisions between stages.
-- Use black to format code (`uv run black src tests`, configured in `pyproject.toml`); files in `third_party/` are
+- Use ruff to format code (`uvx ruff format src tests`, configured in `pyproject.toml`); files in `third_party/` are
   vendored and excluded.
 
