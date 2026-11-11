@@ -234,7 +234,7 @@ Tests: `uv run pytest`. See `tests/fixtures.py` for the `StageA`/`StageB` test-d
 - `src/wrf_massive/third_party/` holds vendored files that must stay unchanged except for the added copyright
   information: don't edit or format them (black/ruff exclude the dir; attribution also in CITATION.cff). Wrap them
   instead — `plotting.plot_domain_nml` runs `plot_domains.py` via `runpy.run_module(..., run_name="__main__")` with its
-  arguments in `sys.argv`, since the script only has a `__main__` block. Our defaults (`-n NAMELIST`, `-s domain.png`)
+  arguments in `sys.argv`, since the script only has a `__main__` block. Our defaults (`-n NAMELIST`, `-s domains.png`)
   go before the user's options, so argparse's last-wins lets those override them.
 - Don't hand-roll subprocess calls; use `stages/utils.py::run_cmd_logged` (handles logging + non-zero exit) and
   `render_template`/`load_wps_wrf_namelist_tmpl` for Jinja2 rendering.

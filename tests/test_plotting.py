@@ -46,13 +46,13 @@ def test_cli_domain_geo_em(tmp_path):
     _make_geo_em(geo)
     result = CliRunner().invoke(main, ["plot", "domain-geo-em", str(geo), "--no-coastlines"])
     assert result.exit_code == 0, result.output
-    # output is auto-derived next to the geo_em file as <stem>_domain.png
-    out = tmp_path / "geo_em.d01_domain.png"
+    # output is auto-derived next to the geo_em file as <stem>_domains.png
+    out = tmp_path / "geo_em.d01_domains.png"
     assert out.exists() and out.stat().st_size > 0
 
 
 def test_cli_domain_nml(tmp_path, monkeypatch):
-    """`plot domain-nml NAMELIST` runs the vendored WPS plot_domains.py, saving to domain.png by default and passing
+    """`plot domain-nml NAMELIST` runs the vendored WPS plot_domains.py, saving to domains.png by default and passing
     further options through."""
     import wrf_massive
     from cartopy.mpl.geoaxes import GeoAxes
@@ -63,7 +63,7 @@ def test_cli_domain_nml(tmp_path, monkeypatch):
 
     result = CliRunner().invoke(main, ["plot", "domain-nml", str(namelist), "--hide_lines"])
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "domain.png").stat().st_size > 0
+    assert (tmp_path / "domains.png").stat().st_size > 0
 
     result = CliRunner().invoke(main, ["plot", "domain-nml", str(namelist), "-s", "other.png"])
     assert result.exit_code == 0, result.output

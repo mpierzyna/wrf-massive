@@ -384,7 +384,7 @@ def plot():
 def domain_geo_em(geo_em_path: str, cmap: str, coastlines: bool, coastline_resolution: str, gridlines: bool):
     """Plot the terrain of a domain from GEO_EM_PATH (a geo_em.dNN.nc file written by geogrid).
 
-    The plot is saved next to the file as `<name>_domain.png`.
+    The plot is saved next to the file as `<name>_domains.png`.
     """
     from wrf_massive.plotting import plot_domain_geo_em  # imported lazily: plotting pulls in xarray/matplotlib
 
@@ -410,7 +410,7 @@ def domain_nml(args: Tuple[str, ...]):
     """Plot the domain layout of a WPS namelist without running geogrid (`--help` for options).
 
     Usage: `wrf-massive plot domain-nml NAMELIST [OPTIONS]`, e.g. `wrf-massive plot domain-nml namelist.tmpl.wps`.
-    Runs `plot_domains.py` from WPS v4.7.0 (Anthony Islas, 2025) on NAMELIST, saving to `domain.png` unless
+    Runs `plot_domains.py` from WPS v4.7.0 (Anthony Islas, 2025) on NAMELIST, saving to `domains.png` unless
     `--save_file` is given. OPTIONS are passed on to the script.
     """
     from wrf_massive.plotting import plot_domain_nml  # imported lazily: plotting pulls in xarray/matplotlib
@@ -419,7 +419,7 @@ def domain_nml(args: Tuple[str, ...]):
         click.echo(
             "Usage: wrf-massive plot domain-nml NAMELIST [OPTIONS]\n\n"
             "Plot the domain layout of NAMELIST (a namelist.wps or namelist.tmpl.wps) without running geogrid,\n"
-            "using plot_domains.py of WPS v4.7.0 (Anthony Islas, 2025). The plot is saved to domain.png unless\n"
+            "using plot_domains.py of WPS v4.7.0 (Anthony Islas, 2025). The plot is saved to domains.png unless\n"
             "--save_file is given. OPTIONS of plot_domains.py (-n/--namelist is set from NAMELIST):\n"
         )
         if not args:

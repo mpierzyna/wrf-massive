@@ -223,8 +223,8 @@ wrf-massive plot domain-geo-em 2_wps/geo_em.d01.nc        # terrain of the geogr
 
 `domain-nml` runs [`plot_domains.py`](https://github.com/wrf-model/WPS/blob/release-v4.7.0/util/plot_domains.py)
 from WPS v4.7.0 by Anthony Islas (2025), included unchanged in `wrf_massive/third_party/`, except for the added
-copyright information. It saves the plot to `--save_file` (default `domain.png`) when no interactive display is
-available, and opens a window otherwise. `domain-geo-em` saves the plot next to the file as `<name>_domain.png`.
+copyright information. It saves the plot to `--save_file` (default `domains.png`) when no interactive display is
+available, and opens a window otherwise. `domain-geo-em` saves the plot next to the file as `<name>_domains.png`.
 
 ## Implementing a new Stage
 
