@@ -231,28 +231,30 @@ The template is a starting point and does not run as is: set the WPS/WRF paths i
 (`~/.cdsapirc` or `CDSAPI_URL`/`CDSAPI_KEY`) and adapt the domain and simulations to your study.
 
 ### The env file
-The env file contains the settings that differ between machines:
+The env file `env.yaml` contains the settings that differ between machines:
 - `pipeline` (required) — name of the pipeline variable in `pipeline.py` to use, e.g. `p_default`.
 - `job_file` (optional) — SLURM job script for `wrf-massive submit`, relative to the workspace root. `--jobfile`
   overrides it; without either, `submit` stops with an error.
 - `log_level` (optional) — `debug`, `info` (default), `warning`, `error` or `critical`.
 - anything else your `pipeline.py` needs, e.g. the `wps` and `wrf` groups of the template.
 
-The directory containing the env file is the workspace root. The CLI looks for the env file in the current
-directory and its parents, so you can run it from anywhere inside the workspace, e.g. from a simulation dir.
-Relative paths in `pipeline.py` and in the env file are relative to the workspace root; paths given on the command
-line are relative to where you run the command.
+The directory containing `env.yaml` is the workspace root. The CLI looks for `env.yaml` in the current directory and
+its parents, so you can run it from anywhere inside the workspace, e.g. from a simulation dir. Relative paths in
+`pipeline.py` and in the env file are relative to the workspace root; paths given on the command line are relative to
+where you run the command.
 
-To work on several machines, keep one env file per machine (e.g. `env_laptop.yaml`, `env_hpc.yaml`) and select it with
-`--env-file`/`-e` or the `WRF_MASSIVE_ENV_FILE` environment variable (`env.yaml` by default):
+To work on several machines, keep one env file per machine (e.g. `env_laptop.yaml`, `env_hpc.yaml`, committed to your
+repository) and symlink the one of the current machine to `env.yaml` (ignored by git):
 
 ```bash
-wrf-massive -e env_hpc.yaml submit test_1
+ln -sf env_hpc.yaml env.yaml
 ```
 
-Alternatively, symlink the active one to `env.yaml` (`ln -sf env_hpc.yaml env.yaml`).
+SLURM jobs read `env.yaml` when they start, not when they are submitted. So that they don't silently run with other
+settings, a job submitted by `wrf-massive submit` fails if `env.yaml` was edited or linked to another file in the
+meantime. Resubmit the job then, or restore `env.yaml`.
 
-In `pipeline.py`, read the settings with `load_env()`, which returns the env file the CLI was started with:
+In `pipeline.py`, read the settings with `load_env()`, which returns the workspace's `env.yaml`:
 
 ```python
 from wrf_massive.workspace import load_env

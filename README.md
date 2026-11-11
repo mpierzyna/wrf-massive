@@ -119,10 +119,10 @@ uv add --editable ./submodules/wrf-massive              # or with --extra postpr
 
 ## Workspaces
 
-A workspace is a directory with the configuration of one study: an env file with machine-specific settings, the
-pipeline, the simulations and the WPS/WRF namelist templates. The directory containing the env file (`env.yaml` by
-default) is the workspace root, so the CLI works from any subdirectory. To work on several machines, keep one env file
-per machine and select it with `wrf-massive --env-file env_hpc.yaml ...`.
+A workspace is a directory with the configuration of one study: an env file (`env.yaml`) with machine-specific
+settings, the pipeline, the simulations and the WPS/WRF namelist templates. The directory containing `env.yaml` is the
+workspace root, so the CLI works from any subdirectory. To work on several machines, keep one env file per machine and
+symlink the one of the current machine to `env.yaml` (`ln -sf env_hpc.yaml env.yaml`).
 
 See the [developer guide](src/wrf_massive/README.md#workspaces) for what the files do and how to write your own
 stages.

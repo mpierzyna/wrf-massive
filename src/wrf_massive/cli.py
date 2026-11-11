@@ -4,8 +4,8 @@
 
 """The `wrf-massive` command line interface.
 
-Every command except `init` operates on the workspace containing the env file (`--env-file`, default `env.yaml`,
-searched from the current directory upwards). Path arguments are relative to the directory the command is run from.
+Every command except `init` and `plot` operates on the workspace containing `env.yaml`, searched from the current
+directory upwards. Path arguments are relative to the directory the command is run from.
 """
 
 from __future__ import annotations
@@ -24,13 +24,7 @@ import click
 from wrf_massive.base import Pipeline, Simulation
 from wrf_massive.log import get_logger
 from wrf_massive.monitor import get_monitor_interval, monitor, monitor_prefix
-from wrf_massive.workspace import (
-    DEFAULT_ENV_FILE,
-    ENV_FILE_ENVVAR,
-    Workspace,
-    WorkspaceError,
-    init_workspace,
-)
+from wrf_massive.workspace import ENV_FILE, ENV_HASH_ENVVAR, Workspace, WorkspaceError, init_workspace
 
 logger = get_logger()
 
@@ -38,24 +32,28 @@ logger = get_logger()
 class CliState:
     """Global CLI options. The workspace is only loaded when a command needs it, so `--help` works anywhere."""
 
-    def __init__(self, env_file: str, debug: bool):
-        self.env_file = env_file
+    def __init__(self, debug: bool):
         self.debug = debug
         self._workspace: Workspace | None = None
 
     @property
     def workspace(self) -> Workspace:
-        """The current workspace, activated (logging configured, cwd changed to its root)."""
+        """The current workspace, activated (logging configured, cwd changed to its root).
+
+        In a job started by `submit`, fails if env.yaml changed since the submission.
+        """
         if self._workspace is None:
             try:
-                ws = Workspace.discover(self.env_file)
+                ws = Workspace.discover()
+                ws.check_env_unchanged(os.environ.get(ENV_HASH_ENVVAR))
                 ws.activate()
             except WorkspaceError as e:
                 raise click.ClickException(str(e)) from e
             if self.debug:
                 logger.setLevel(logging.DEBUG)
                 logger.debug("Debug mode enabled.")
-            logger.info(f"Workspace '{ws.root}' (env file '{ws.env_file.name}').")
+            target = f" -> {os.readlink(ws.env_file)}" if ws.env_file.is_symlink() else ""
+            logger.info(f"Workspace '{ws.root}' ({ENV_FILE}{target}).")
             self._workspace = ws
         return self._workspace
 
@@ -167,12 +165,12 @@ def _submit_stage_slurm(
     # Submit job. Arguments after the jobfile are passed to it: stage name and sim dir for `wrf-massive run`.
     cmd = ["sbatch", *sbatch_args, str(jobfile), stage_name, str(sim_dir)]
 
-    # sbatch exports the submitting environment to the job by default, so `wrf-massive run` inside the job
-    # uses the same env file.
-    env = {**os.environ, ENV_FILE_ENVVAR: str(ws.env_file)}
+    # sbatch exports the submitting environment to the job by default, so `wrf-massive run` inside the job can check
+    # that env.yaml is still the one the job was submitted with.
+    env = {**os.environ, ENV_HASH_ENVVAR: ws.env_hash}
 
     if dry_run:
-        click.echo(f"Dry run, not submitting: {ENV_FILE_ENVVAR}={ws.env_file} {' '.join(cmd)}")
+        click.echo(f"Dry run, not submitting: {ENV_HASH_ENVVAR}={ws.env_hash} {' '.join(cmd)}")
         return random.randint(0, 1000)
 
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ws.root)
@@ -188,20 +186,15 @@ def _submit_stage_slurm(
 
 
 @click.group()
-@click.option(
-    "--env-file",
-    "-e",
-    default=DEFAULT_ENV_FILE,
-    show_default=True,
-    envvar=ENV_FILE_ENVVAR,
-    help="Env file of the workspace. Searched in the current directory and its parents; "
-    "the directory containing it is the workspace root.",
-)
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging; `submit` only prints the jobs.")
 @click.pass_context
-def main(ctx: click.Context, env_file: str, debug: bool):
-    """Orchestrate WRF simulations of a workspace."""
-    ctx.obj = CliState(env_file=env_file, debug=debug)
+def main(ctx: click.Context, debug: bool):
+    """Orchestrate WRF simulations of a workspace.
+
+    The workspace is the closest directory (current dir or a parent) containing `env.yaml`. To switch between
+    machine-specific settings, symlink the env file of the machine: `ln -sf env_<machine>.yaml env.yaml`.
+    """
+    ctx.obj = CliState(debug=debug)
 
 
 @main.command()
@@ -223,7 +216,7 @@ def init(directory: str, force: bool):
         click.echo(f"Created {path.relative_to(root)}")
     click.echo(
         f"\nInitialised workspace in '{root}'. Next steps:\n"
-        f"  1. Set the WPS/WRF paths in {DEFAULT_ENV_FILE}.\n"
+        f"  1. Set the WPS/WRF paths in {ENV_FILE}.\n"
         f"  2. Set up CDS credentials (~/.cdsapirc) for the forcing download.\n"
         f"  3. Adapt the domain in namelist.tmpl.wps and the simulations in simulations.py.\n"
         f"  4. Run `wrf-massive init-sims simulations.py sim_test`, then `wrf-massive run test_1`."

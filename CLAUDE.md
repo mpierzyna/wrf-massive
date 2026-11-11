@@ -64,25 +64,28 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
 
 ## Workspaces and the CLI (`workspace.py`, `cli.py`)
 
-- **Root discovery**: `find_env_file(value)` uses `value` if it exists relative to the cwd (or is absolute), else
-  searches the cwd's parents for `<parent>/<value>`. The root is the env file's parent via `os.path.abspath`, *not*
-  `.resolve()`, so the common `env.yaml -> env_<machine>.yaml` symlink doesn't move the root.
+- **Root discovery**: `env.yaml` is the only env file (no `--env-file` option, so nothing has to carry the chosen
+  file from the CLI into `pipeline.py` or into SLURM jobs). `find_env_file(start)` searches the cwd and its parents for
+  it. The root is its parent via `os.path.abspath`, *not* `.resolve()`, so the usual `env.yaml -> env_<machine>.yaml`
+  symlink doesn't move the root.
 - **Activation** (`Workspace.activate`): configures logging from the env's `log_level` (default `info`; root logger
   level + `basicConfig`, which is a no-op if handlers exist), `os.chdir(root)` and puts the root first on `sys.path`.
   The chdir is what keeps all relative paths in workspaces (`namelist_tmpl_path`, env paths, `TPathExists`
   validation at import time) working from any subdir. `pipeline.py` is then imported by file path and registered as
-  `sys.modules["pipeline"]`; `init-sims` imports the sims module the same way. `_active` holds the activated
-  workspace and `load_env()` returns its env (fallback outside the CLI: `$WRF_MASSIVE_ENV_FILE` or `env.yaml`
-  searched from the cwd). Errors while importing `pipeline.py` become a `WorkspaceError` naming the env file.
+  `sys.modules["pipeline"]`; `init-sims` imports the sims module the same way. `load_env()` is stateless
+  (`Workspace.discover().env`): it is called while the cwd is the root, so it finds the CLI's env.yaml. Errors while
+  importing `pipeline.py` become a `WorkspaceError` naming the env file.
 - **Click ordering**: a group callback runs *before* the subcommand's args are parsed/validated. So `main` only stores
-  `CliState(env_file, debug)` in `ctx.obj`; each command first makes its path args absolute against the invocation
+  `CliState(debug)` in `ctx.obj`; each command first makes its path args absolute against the invocation
   cwd (`os.path.abspath`), then touches `state.workspace`/`state.pipeline`, which activates (chdirs) lazily. This also
   keeps `--help`, `init` and the `plot` group working outside a workspace. The `plot` commands import `plotting`
   inside the command (xarray/matplotlib add ~0.3 s to every CLI start otherwise). Sim dirs are therefore absolute inside commands.
 - **`submit`** takes the job script from `--jobfile`, else from the env file's `job_file` (`Workspace.job_file`,
-  relative to the root; a missing one is a `UsageError`). It runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_FILE] = <abs env file>`; sbatch exports the
-  environment by default, so `wrf-massive run` in the job picks up the same env file. `--debug` prints the command
-  instead (dry run) and sets the `wrf_massive` logger to DEBUG.
+  relative to the root; a missing one is a `UsageError`). It runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_SHA256] = Workspace.env_hash` (SHA-256 of the env.yaml
+  bytes read at load); sbatch exports the environment by default. In the job, `CliState.workspace` calls
+  `check_env_unchanged` with that variable before activating, so a job fails if env.yaml was edited or relinked since
+  submission (no check if the variable is unset, e.g. local runs or `#SBATCH --export=NONE`). `--debug` prints the
+  command instead (dry run) and sets the `wrf_massive` logger to DEBUG.
 - **Monitoring** (`monitor.py`, `monitor.sh`): with `$WRF_MASSIVE_MONITOR=<s>`, `run` wraps each stage (one
   `p.run(s, stages=[name])` per stage) in `monitor()`, which starts the bundled `monitor.sh` as a child process (so
   it sits in the SLURM job's cgroup), waits for its first sample (its TERM trap is set by then) and terminates it
@@ -240,7 +243,7 @@ wrf-massive init-sims simulations.py sim_test     # create sim_dir test_1 (in th
 wrf-massive run test_1                            # run all stages locally
 wrf-massive run --stages wps test_1               # run a subset of stages
 wrf-massive teardown --stages wps test_1          # force work dirs back from tmp storage (--all ignores globs)
-wrf-massive -e env_hpc.yaml submit test_1        # submit each stage as its own sbatch job (job_file of env file)
+wrf-massive submit test_1                        # submit each stage as its own sbatch job (job_file of env file)
 ```
 
 `uv sync` installs everything except `wrf-python`; `uv sync --extra postproc` adds it (needs a Fortran compiler).

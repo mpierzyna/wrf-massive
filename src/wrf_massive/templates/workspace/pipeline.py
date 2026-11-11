@@ -7,7 +7,7 @@ A pipeline is an ordered set of named stages. This one
 3. runs WRF and
 4. marks the simulation as done.
 
-The env file selects the pipeline (`pipeline: p_default`) and provides the machine-specific settings (`load_env()`).
+The env file (`env.yaml`) selects the pipeline (`pipeline: p_default`) and provides the machine-specific settings (`load_env()`).
 Relative paths are relative to the workspace root.
 """
 

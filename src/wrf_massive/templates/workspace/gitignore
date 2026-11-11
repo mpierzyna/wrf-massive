@@ -4,5 +4,8 @@ slurm/
 *.partial
 *.skip
 
+# Ignore env file symlink
+/env.yaml
+
 # Example simulation created by `wrf-massive init-sims simulations.py sim_test`
 test_1/

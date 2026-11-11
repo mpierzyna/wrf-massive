@@ -4,6 +4,7 @@
 
 """Tests for the `wrf-massive` CLI and workspace discovery."""
 
+import hashlib
 import logging
 import os
 import pathlib
@@ -14,10 +15,9 @@ import textwrap
 import pytest
 from click.testing import CliRunner
 
-from wrf_massive import workspace
 from wrf_massive.base import Simulation
 from wrf_massive.cli import main
-from wrf_massive.workspace import ENV_FILE_ENVVAR, find_env_file
+from wrf_massive.workspace import ENV_HASH_ENVVAR, find_env_file, load_env
 
 # `fixtures` is importable because pytest puts the tests dir on sys.path.
 PIPELINE_PY = """
@@ -54,8 +54,7 @@ sim_x = Simulation(sim_dir="sim_x", settings={}, warmup_h=12, begin="2025-01-01"
 def isolate_workspace_state(monkeypatch):
     """The CLI changes dir, extends sys.path, imports workspace modules and sets log levels. Undo all of it."""
     monkeypatch.setattr(sys, "path", list(sys.path))
-    monkeypatch.setattr(workspace, "_active", None)
-    monkeypatch.delenv(ENV_FILE_ENVVAR, raising=False)
+    monkeypatch.delenv(ENV_HASH_ENVVAR, raising=False)
     cwd = os.getcwd()
     levels = {name: logging.getLogger(name).level for name in ("", "wrf_massive")}
     yield
@@ -97,12 +96,10 @@ def use_pipeline(ws: pathlib.Path, name: str):
 # Workspace discovery ---------------------------------------------------------------------------------------------
 
 
-def test_find_env_file_paths_relative_to_cwd(ws):
-    """An env file given with directories is resolved against the cwd (bare names are searched upwards)."""
-    (ws / "machines").mkdir()
-    write_env(ws / "machines" / "env_m.yaml", pipeline="p_test")
-    assert find_env_file("machines/env_m.yaml", start=ws) == ws / "machines" / "env_m.yaml"
-    assert find_env_file("../machines/env_m.yaml", start=ws / "sim_1") == ws / "machines" / "env_m.yaml"
+def test_find_env_file(ws):
+    """env.yaml is searched upwards; other env files are never used."""
+    write_env(ws / "sim_1" / "env_m.yaml", pipeline="p_test")
+    assert find_env_file(start=ws / "sim_1") == ws / "env.yaml"
 
 
 def test_outside_workspace(tmp_path):
@@ -115,7 +112,7 @@ def test_outside_workspace(tmp_path):
     result = invoke("run", "sim")
 
     assert result.exit_code != 0
-    assert "Env file 'env.yaml' not found" in result.output
+    assert "No env.yaml found" in result.output
 
 
 def test_run_from_sim_subdir(ws):
@@ -132,21 +129,16 @@ def test_run_from_sim_subdir(ws):
     assert pathlib.Path.cwd() == ws
 
 
-@pytest.mark.parametrize("via", ["option", "envvar"])
-def test_env_file_selection(ws, via):
-    """`--env-file`/$WRF_MASSIVE_ENV_FILE (bare name, searched upwards) selects the pipeline AND is what
-    `load_env()` returns inside pipeline.py."""
-    write_env(ws / "env_alt.yaml", pipeline="p_test", work_dir="alt")
+def test_load_env(ws):
+    """`load_env()` returns the workspace's env.yaml, in pipeline.py (run by the CLI) and from any subdir."""
+    write_env(ws / "env.yaml", pipeline="p_test", work_dir="alt")
     os.chdir(ws / "sim_1")
+    assert load_env()["work_dir"] == "alt"
 
-    if via == "option":
-        result = invoke("--env-file", "env_alt.yaml", "run", "-s", "a", ".")
-    else:
-        result = invoke("run", "-s", "a", ".", env={ENV_FILE_ENVVAR: "env_alt.yaml"})
+    result = invoke("run", "-s", "a", ".")
 
     assert result.exit_code == 0, result.output
     assert (ws / "sim_1" / "alt" / "result.txt").exists()
-    assert not (ws / "sim_1" / "a").exists()
 
 
 def test_symlinked_env_file_root_is_link_dir(ws):
@@ -230,17 +222,20 @@ def fake_sbatch(monkeypatch):
     return calls
 
 
-def test_submit_passes_env_file_to_jobs(ws, fake_sbatch):
-    write_env(ws / "env_alt.yaml", pipeline="p_test")
+def env_hash(ws: pathlib.Path) -> str:
+    return hashlib.sha256((ws / "env.yaml").read_bytes()).hexdigest()
+
+
+def test_submit(ws, fake_sbatch):
     (ws / "job.sh").touch()
     os.chdir(ws / "sim_1")
 
-    result = invoke("-e", "env_alt.yaml", "submit", "-j", "../job.sh", ".")
+    result = invoke("submit", "-j", "../job.sh", ".")
 
     assert result.exit_code == 0, result.output
     assert len(fake_sbatch) == 2  # stages a, b
     (cmd_a, kwargs_a), (cmd_b, _) = fake_sbatch
-    assert kwargs_a["env"][ENV_FILE_ENVVAR] == str(ws / "env_alt.yaml")
+    assert kwargs_a["env"][ENV_HASH_ENVVAR] == env_hash(ws)
     assert kwargs_a["cwd"] == ws
     assert cmd_a[-3:] == [str(ws / "job.sh"), "a", str(ws / "sim_1")]
     assert "--nodes=1" in cmd_a  # default
@@ -265,6 +260,30 @@ def test_submit_job_file_from_env(ws, fake_sbatch):
     assert fake_sbatch[-1][0][-3] == str(ws / "other.sh")
 
 
+@pytest.mark.parametrize("change", [None, "edit", "relink"])
+def test_job_fails_if_env_changed_since_submit(ws, change):
+    """A job submitted with one env.yaml fails loudly instead of running with another one."""
+    (ws / "env.yaml").rename(ws / "env_m1.yaml")
+    (ws / "env.yaml").symlink_to("env_m1.yaml")
+    submitted = env_hash(ws)
+    if change == "edit":
+        write_env(ws / "env_m1.yaml", pipeline="p_test", work_dir="alt")
+    elif change == "relink":
+        write_env(ws / "env_m2.yaml", pipeline="p_test", work_dir="alt")
+        (ws / "env.yaml").unlink()
+        (ws / "env.yaml").symlink_to("env_m2.yaml")
+
+    result = invoke("run", "sim_1", env={ENV_HASH_ENVVAR: submitted})
+
+    if change is None:
+        assert result.exit_code == 0, result.output
+        return
+    assert result.exit_code != 0
+    assert "changed since this job was submitted" in result.output
+    assert ("-> env_m2.yaml" in result.output) == (change == "relink")
+    assert not (ws / "sim_1" / "a").exists() and not (ws / "sim_1" / "alt").exists()
+
+
 @pytest.mark.parametrize(
     "job_file, message",
     [(None, "No job script: set `job_file`"), ("missing.sh", "does not exist")],
@@ -287,7 +306,7 @@ def test_submit_debug_is_dry_run(ws, fake_sbatch):
     assert result.exit_code == 0, result.output
     assert not fake_sbatch
     assert "Dry run" in result.output
-    assert f"{ENV_FILE_ENVVAR}={ws / 'env.yaml'}" in result.output
+    assert f"{ENV_HASH_ENVVAR}={env_hash(ws)}" in result.output
     assert logging.getLogger("wrf_massive").level == logging.DEBUG
 
 

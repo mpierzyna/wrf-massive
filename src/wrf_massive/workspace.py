@@ -2,14 +2,16 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Workspaces: a directory holding an env file, `pipeline.py`, `simulations.py` and namelist templates.
+"""Workspaces: a directory holding `env.yaml`, `pipeline.py`, `simulations.py` and namelist templates.
 
-The workspace root is the directory containing the env file (default `env.yaml`). It is found by searching the
-current directory and its parents, so the `wrf-massive` CLI works from anywhere inside a workspace.
+The workspace root is the directory containing `env.yaml`. It is found by searching the current directory and its
+parents, so the `wrf-massive` CLI works from anywhere inside a workspace. To keep settings for several machines, commit
+one `env_<machine>.yaml` per machine and symlink the one of the current machine to `env.yaml`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import importlib.util
 import logging
@@ -25,8 +27,9 @@ from wrf_massive.log import get_logger
 
 logger = get_logger()
 
-DEFAULT_ENV_FILE = "env.yaml"
-ENV_FILE_ENVVAR = "WRF_MASSIVE_ENV_FILE"  # read by the CLI's `--env-file` and by `load_env`
+ENV_FILE = "env.yaml"
+# SHA-256 of env.yaml at submission, set by `submit` for its jobs: a job fails if env.yaml changed in the meantime
+ENV_HASH_ENVVAR = "WRF_MASSIVE_ENV_SHA256"
 PIPELINE_MODULE = "pipeline"  # `pipeline.py` in the workspace root
 DEFAULT_LOG_LEVEL = "info"
 LOG_FORMAT = "%(asctime)s %(levelname)s:%(name)s:%(message)s"
@@ -34,9 +37,7 @@ LOG_FORMAT = "%(asctime)s %(levelname)s:%(name)s:%(message)s"
 # Packaged files copied by `init_workspace`, mapped to their name in the new workspace. Files are stored under a
 # different name in the package where the real name would be picked up by git (`.gitignore`) or by the env file
 # search (`env.yaml`).
-TEMPLATE_RENAMES = {"env.tmpl.yaml": DEFAULT_ENV_FILE, "gitignore": ".gitignore"}
-
-_active: Workspace | None = None  # workspace activated by the CLI; returned by `load_env`
+TEMPLATE_RENAMES = {"env.tmpl.yaml": ENV_FILE, "gitignore": ".gitignore"}
 
 
 class WorkspaceError(Exception):
@@ -48,26 +49,16 @@ def _abspath(path: str | pathlib.Path) -> pathlib.Path:
     return pathlib.Path(os.path.abspath(path))
 
 
-def find_env_file(
-    env_file: str | pathlib.Path = DEFAULT_ENV_FILE, start: str | pathlib.Path | None = None
-) -> pathlib.Path:
-    """Locate an env file.
-
-    `env_file` is used as is if it exists relative to `start` (default: current dir) or is absolute. Otherwise, the
-    parents of `start` are searched for `<parent>/<env_file>`, so both the default `env.yaml` and a name like
-    `env_snellius.yaml` are found from any subdirectory of a workspace.
-    """
-    env_file = pathlib.Path(env_file)
+def find_env_file(start: str | pathlib.Path | None = None) -> pathlib.Path:
+    """Locate `env.yaml` in `start` (default: current dir) or the closest of its parents."""
     start = _abspath(start if start is not None else pathlib.Path.cwd())
-
-    candidates = [env_file] if env_file.is_absolute() else [d / env_file for d in (start, *start.parents)]
-    for candidate in candidates:
-        if candidate.is_file():
-            return _abspath(candidate)
+    for directory in (start, *start.parents):
+        if (directory / ENV_FILE).is_file():  # follows a symlink, so a dangling one is skipped
+            return directory / ENV_FILE
 
     raise WorkspaceError(
-        f"Env file '{env_file}' not found in '{start}' or any of its parents. "
-        f"Run this command inside a workspace (create one with `wrf-massive init`) or pass `--env-file`."
+        f"No {ENV_FILE} found in '{start}' or any of its parents. Run this command inside a workspace (create one "
+        f"with `wrf-massive init`). For machine-specific settings, symlink one: `ln -s env_<machine>.yaml {ENV_FILE}`."
     )
 
 
@@ -95,18 +86,20 @@ class Workspace:
     def __init__(self, env_file: str | pathlib.Path):
         self.env_file = _abspath(env_file)
         self.root = self.env_file.parent  # parent of the file itself, not of a symlink target
-        self.env = self._read_env(self.env_file)
+        content = self.env_file.read_bytes()
+        self.env_hash = hashlib.sha256(content).hexdigest()
+        self.env = self._parse_env(content.decode(), self.env_file)
         self.log_level = parse_log_level(self.env.get("log_level", DEFAULT_LOG_LEVEL))
         self._pipeline: Pipeline | None = None
 
     @classmethod
-    def discover(cls, env_file: str | pathlib.Path = DEFAULT_ENV_FILE, start: str | pathlib.Path | None = None):
-        """Find the env file (see `find_env_file`) and create the workspace from it."""
-        return cls(find_env_file(env_file, start=start))
+    def discover(cls, start: str | pathlib.Path | None = None):
+        """Find `env.yaml` (see `find_env_file`) and create the workspace from it."""
+        return cls(find_env_file(start=start))
 
     @staticmethod
-    def _read_env(env_file: pathlib.Path) -> Dict[str, Any]:
-        env = yaml_to_dict(env_file.read_text())
+    def _parse_env(content: str, env_file: pathlib.Path) -> Dict[str, Any]:
+        env = yaml_to_dict(content)
         if not isinstance(env, dict):
             raise WorkspaceError(f"Env file '{env_file}' must contain a mapping of settings.")
         return env
@@ -117,12 +110,24 @@ class Workspace:
         Paths in `pipeline.py` and in the env file are thus resolved relative to the root, wherever the CLI was
         started. Idempotent.
         """
-        global _active
         configure_logging(self.log_level)
         os.chdir(self.root)
         if str(self.root) not in sys.path:
             sys.path.insert(0, str(self.root))
-        _active = self
+
+    def check_env_unchanged(self, submitted_hash: str | None):
+        """Raise if env.yaml is not the one a job was submitted with (`submitted_hash`, see `ENV_HASH_ENVVAR`).
+
+        Jobs read env.yaml when they start, so relinking or editing it while jobs are queued would silently change
+        their settings and pipeline. No check if `submitted_hash` is None (not started by `submit`).
+        """
+        if submitted_hash is None or submitted_hash == self.env_hash:
+            return
+        target = f" (-> {os.readlink(self.env_file)})" if self.env_file.is_symlink() else ""
+        raise WorkspaceError(
+            f"'{self.env_file}'{target} changed since this job was submitted (SHA-256 {self.env_hash[:12]}, "
+            f"submitted with {submitted_hash[:12]}). Restore it or resubmit the job."
+        )
 
     def import_module(self, path: str | pathlib.Path, name: str | None = None) -> ModuleType:
         """Import a Python file of this workspace as module `name` (default: file name without suffix)."""
@@ -185,14 +190,13 @@ class Workspace:
 
 
 def load_env() -> Dict[str, Any]:
-    """Settings of the current workspace's env file, for use in `pipeline.py`.
+    """Settings of the current workspace's `env.yaml`, for use in `pipeline.py`.
 
-    Returns the env file the CLI was started with (`--env-file`). Outside the CLI (e.g. in a notebook), the env file
-    is taken from `$WRF_MASSIVE_ENV_FILE` or defaults to `env.yaml`, searched from the current directory upwards.
+    `env.yaml` is searched from the current directory upwards. The CLI changes into the workspace root before it
+    imports `pipeline.py`, so this is the env file of the CLI's workspace; in a notebook, it is that of the workspace
+    the notebook runs in.
     """
-    if _active is not None:
-        return _active.env
-    return Workspace.discover(os.environ.get(ENV_FILE_ENVVAR, DEFAULT_ENV_FILE)).env
+    return Workspace.discover().env
 
 
 def _template_dir():
