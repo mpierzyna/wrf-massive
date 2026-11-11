@@ -61,11 +61,13 @@ class Resources(pydantic.BaseModel):
     ----
     - Python processes typically need 1 task, n CPUs
     - MPI programs typically need n tasks, 1 CPU per task
+    - `n_tasks` is the total over all `n_nodes` (SLURM `--ntasks`); only MPI programs can span several nodes
     """
 
-    n_tasks: int  # number of tasks
+    n_tasks: int  # number of tasks (in total, over all nodes)
     cpus_per_task: int  # number of CPUs per task
     mem_per_cpu: str  # memory per CPU (e.g. "4G", "800M")
+    n_nodes: int = pydantic.Field(default=1, gt=0)  # number of nodes (SLURM `--nodes`)
     walltime: datetime.timedelta | None = None  # maximum walltime
     max_concurrent: int | None = pydantic.Field(default=None, gt=0)
     # If set, caps the number of concurrently RUNNING jobs for this stage at this value,

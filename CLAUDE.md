@@ -118,7 +118,8 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   is already both `is_setup()` and `is_done()` (checked before any tmp relocation, so a finished simulation costs
   nothing), then calls `setup()` unless already `is_setup()` and `run()` unless already `is_done()`, all inside the
   stage's tmp context. `Pipeline.run()` skips the whole simulation if `sim_dir/.done` exists.
-- **`Resources`**: `n_tasks`, `cpus_per_task`, `mem_per_cpu`, optional `walltime`; used by the CLI's SLURM
+- **`Resources`**: `n_tasks` (total over all nodes, SLURM `--ntasks`), `cpus_per_task`, `mem_per_cpu`, `n_nodes`
+  (default 1, SLURM `--nodes`), optional `walltime`; used by the CLI's SLURM
   submission helpers to build `sbatch` args. Optional `max_concurrent: int` caps how many jobs for that
   stage can be *running* at once across all simulations, independent of CPU/core headroom — enforced in
   `cli.py`'s `_submit_stage_slurm` via SLURM's `--dependency=singleton`, hashing each sim_dir into one of

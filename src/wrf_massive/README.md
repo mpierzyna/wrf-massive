@@ -107,6 +107,11 @@ in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set
 ### Resources
 `Resources` is a pydantic model with:
 - `n_tasks`, `cpus_per_task`, `mem_per_cpu`, and optional `walltime` (`datetime.timedelta`).
+- `n_nodes` — number of nodes the job runs on (default 1). `n_tasks` is the total over all nodes, e.g.
+  `Resources(n_nodes=2, n_tasks=256, cpus_per_task=1, mem_per_cpu="1G")` runs WRF with 256 MPI tasks on 2 nodes.
+  SLURM decides how many tasks go on each node (it fills nodes one after the other), so the split is only even if
+  the tasks exactly fill the nodes, e.g. 2 × 128 on nodes with 128 cores.
+  Only MPI programs (WRF, WPS) can make use of several nodes; Python stages such as postprocessing run on one.
 - `cpus_total` is a convenience property computed as `n_tasks * cpus_per_task`.
 - `max_concurrent` (optional `int`) — limits how many jobs for this stage are allowed to run at the
   same time. Unset by default (no limit). See "Submitting to SLURM" below for when to use it.

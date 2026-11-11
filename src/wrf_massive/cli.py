@@ -144,6 +144,7 @@ def _submit_stage_slurm(
         "--parsable",  # return job id
         f"--job-name={job_name}",
         f"--output={slurm_dir / f'{stage_name}_%A.out'}",
+        f"--nodes={stage.resources.n_nodes}",
         f"--ntasks={stage.resources.n_tasks}",
         f"--cpus-per-task={stage.resources.cpus_per_task}",
         f"--mem-per-cpu={stage.resources.mem_per_cpu}",

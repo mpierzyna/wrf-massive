@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# SLURM job script for `wrf-massive submit -j slurm.job.sh <sim_dir>`. Tasks, CPUs, memory and walltime are set by
-# `submit` from each stage's `Resources` in pipeline.py; add site-specific options (partition, account, ...) here.
+# SLURM job script for `wrf-massive submit -j slurm.job.sh <sim_dir>`. Nodes, tasks, CPUs, memory and walltime are set
+# by `submit` from each stage's `Resources` in pipeline.py; add site-specific options (partition, account, ...) here.
 ##SBATCH --partition=<partition>
 
 STAGE=$1

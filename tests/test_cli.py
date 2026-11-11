@@ -35,7 +35,7 @@ if env.get("require_marker"):
 
 p_test = Pipeline(
     a=StageA(work_dir=env.get("work_dir", "a"), resources=res),
-    b=StageA(work_dir="b", resources=res),
+    b=StageA(work_dir="b", resources=res.model_copy(update={"n_nodes": 2})),
 )
 p_tmp = Pipeline(
     a=StageA(work_dir="a", tmp_work_root=tmp, tmp_skip_teardown=True),
@@ -243,6 +243,8 @@ def test_submit_passes_env_file_to_jobs(ws, fake_sbatch):
     assert kwargs_a["env"][ENV_FILE_ENVVAR] == str(ws / "env_alt.yaml")
     assert kwargs_a["cwd"] == ws
     assert cmd_a[-3:] == [str(ws / "job.sh"), "a", str(ws / "sim_1")]
+    assert "--nodes=1" in cmd_a  # default
+    assert "--nodes=2" in cmd_b
     assert "--dependency=afterok:101" in cmd_b
 
 
