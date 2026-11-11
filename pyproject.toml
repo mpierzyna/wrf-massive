@@ -29,9 +29,12 @@ dependencies = [
     "scipy>=1.17.1",
     "seaborn>=0.13.2",
     "tqdm>=4.67.3",
-    "wrf-python", # requires gfortran compiler!
     "xarray>=2026.4.0",
 ]
+
+[project.optional-dependencies]
+# Postprocessing stages (stages/postproc, e.g. Cn2PostProcStage) need wrf-python, which requires a Fortran compiler
+postproc = ["wrf-python"]
 
 [project.scripts]
 wrf-massive = "wrf_massive.cli:main"

@@ -16,8 +16,16 @@ from typing import Callable, Dict, List, Self, Tuple
 import netCDF4
 import numpy as np
 import pydantic
-import wrf
 import xarray as xr
+
+try:
+    import wrf
+except ImportError as e:
+    raise ImportError(
+        "The postprocessing stages need wrf-python, which is installed with the `postproc` extra of wrf-massive, "
+        'e.g. `uv add "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@<tag>"` '
+        "(see the installation instructions in the README)."
+    ) from e
 
 from wrf_massive.base import Simulation, Stage, TPath
 from wrf_massive.log import get_logger

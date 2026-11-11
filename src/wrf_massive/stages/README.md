@@ -10,4 +10,4 @@ SPDX-License-Identifier: GPL-3.0-or-later
    `forcing/cds.py`, `forcing/variables.py`, `forcing/geo.py`).
 2. `wps`: Run WPS to met_em files
 3. `wrf`: Run WRF model
-4. `postproc`: Process WRF output data
+4. `postproc`: Process WRF output data. Needs `wrf-python`, installed with the `postproc` extra of wrf-massive.

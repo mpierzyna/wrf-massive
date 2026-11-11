@@ -11,6 +11,9 @@ import pytest
 import xarray as xr
 from fixtures import WRFOUT_DIR, simple_simulation
 
+pytest.importorskip("wrf", reason="wrf-python is not installed (`postproc` extra)")
+
+
 from wrf_massive.base import Resources, Simulation
 from wrf_massive.stages.postproc import PostProcStage
 from wrf_massive.stages.postproc.base import TVarList, load_wrfout

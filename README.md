@@ -33,8 +33,8 @@ Features:
 ## Requirements
 
 - Python 3.12 or newer.
-- A Fortran compiler (e.g. `gfortran` from a working gcc installation): the `wrf-python` dependency is built from
-  source during installation.
+- Only for the postprocessing stages (e.g. $C_n^2$): a Fortran compiler (e.g. `gfortran` from a working gcc
+  installation), to build `wrf-python` from source. It is installed with the optional `postproc` extra.
 - Compiled WPS and WRF, and the WPS static geographical data. wrf-massive orchestrates them but does not build them;
   see [WRF and WPS](#wrf-and-wps).
 - For the forcing data: a [CDS account](https://cds.climate.copernicus.eu/how-to-api) with its credentials in
@@ -54,19 +54,30 @@ uv add "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.0.0"
 uv run wrf-massive --help
 ```
 
-uv also installs the `wrf-python` version that wrf-massive pins (a git tag of NCAR's repository). Prefix the commands
-below with `uv run`, or activate the environment with `source .venv/bin/activate`.
+To use the postprocessing stages, add wrf-massive with the `postproc` extra instead. uv then also installs the
+`wrf-python` version that wrf-massive pins (a git tag of NCAR's repository):
+
+```bash
+uv add "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@v2.0.0"
+```
+
+Prefix the commands below with `uv run`, or activate the environment with `source .venv/bin/activate`.
 
 ### With pip
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install "wrf-python @ git+https://github.com/NCAR/wrf-python@v1.4.2" \
-            "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.0.0"
+pip install "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.0.0"
 wrf-massive --help
 ```
 
-`wrf-python` is installed from its git tag explicitly, because pip would otherwise use the older release on PyPI.
+With the postprocessing stages, install `wrf-python` from its git tag explicitly, because pip would otherwise use the
+older release on PyPI:
+
+```bash
+pip install "wrf-python @ git+https://github.com/NCAR/wrf-python@v1.4.2" \
+            "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@v2.0.0"
+```
 
 ### As a git submodule
 
@@ -76,7 +87,7 @@ it as a submodule and install it in editable mode:
 ```bash
 git submodule add https://github.com/mpierzyna/wrf-massive submodules/wrf-massive
 git -C submodules/wrf-massive checkout v2.0.0
-uv add --editable ./submodules/wrf-massive
+uv add --editable ./submodules/wrf-massive              # or with --extra postproc
 ```
 
 ## Getting started
@@ -128,8 +139,9 @@ For development, this repository includes WRF and WPS as optional submodules in 
 
 ```bash
 git clone https://github.com/mpierzyna/wrf-massive && cd wrf-massive
-uv sync          # install the package and its development dependencies
-uv run pytest    # run the tests
+uv sync                   # install the package and its development dependencies
+uv sync --extra postproc  # ... including wrf-python for the postprocessing stages (needs a Fortran compiler)
+uv run pytest             # run the tests (the postprocessing tests are skipped without wrf-python)
 ```
 
 Releases are made with `uvx bump-my-version bump patch|minor|major`, which updates the version, the citation

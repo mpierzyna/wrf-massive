@@ -18,7 +18,8 @@ use case).
 
 - Package manager: `uv` (`uv sync` to install, `uv run <cmd>` to run anything in the managed env).
 - Python: `>=3.12`.
-- `wrf-python` needs a working `gfortran`/gcc toolchain to build.
+- `wrf-python` needs a working `gfortran`/gcc toolchain to build. It is the optional `postproc` extra (only
+  `stages/postproc/base.py` imports `wrf`; that import raises a pointer to the extra if it's missing).
 - Users install wrf-massive from a GitHub tag (README "Installation"); `bump-my-version` updates those tags in
   README.md. The pip example also pins `wrf-python` to the tag in `[tool.uv.sources]` (pip ignores uv sources) —
   update it there by hand when that pin changes.
@@ -226,8 +227,8 @@ wrf-massive teardown --stages wps test_1          # force work dirs back from tm
 wrf-massive -e env_hpc.yaml submit -j slurm.job.sh test_1   # submit each stage as its own sbatch job
 ```
 
-Without a Fortran compiler `wrf-python` can't be built; `uv sync --no-install-package wrf-python` installs the rest
-(everything except `stages/postproc` and `plotting` works, `tests/test_postproc_stage.py` then can't be collected).
+`uv sync` installs everything except `wrf-python`; `uv sync --extra postproc` adds it (needs a Fortran compiler).
+Without it, `tests/test_postproc_stage.py` is skipped via `pytest.importorskip("wrf")`.
 
 Tests: `uv run pytest`. See `tests/fixtures.py` for the `StageA`/`StageB` test-double pattern and
 `simple_simulation` fixture used to exercise `Stage`/`Pipeline` behavior without real WRF/WPS binaries.
