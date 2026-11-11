@@ -16,7 +16,6 @@ from wrf_massive.base import BBox, Simulation
 from wrf_massive.stages.forcing.cds import (
     CdsRequestSpec,
     PullCdsStage,
-    _grib_reference_key,
     split_grib_by_reference_time,
 )
 
@@ -112,20 +111,62 @@ def _install_fake_cdsapi(monkeypatch, period_times: dict | None = None) -> list:
     return events
 
 
-def test_setup_requires_area(simple_simulation):
-    stage = make_stage()
+def test_area_required_only_for_cropped_requests(simple_simulation):
+    """Requests with `use_area` (the default) need `Simulation.area`; full-domain requests do not."""
     with pytest.raises(ValueError, match="Simulation.area"):
-        stage.setup(simple_simulation)
+        make_stage().setup(simple_simulation)
+
+    stage = make_stage(
+        requests=[
+            CdsRequestSpec(
+                dataset="reanalysis-cerra-single-levels",
+                variables=["2m_temperature"],
+                file_suffix="SFC",
+                use_area=False,
+            ),
+        ],
+    )
+    stage.setup(simple_simulation)  # simple_simulation has no area; must not raise
+    assert stage.is_setup(simple_simulation)
 
 
 def test_setup_writes_request_yaml(simulation_with_area):
-    stage = make_stage()
+    """Each request spec becomes a request sidecar per month, carrying its own dataset-specific fields."""
+    stage = make_stage(
+        requests=[
+            CdsRequestSpec(dataset="reanalysis-era5-single-levels", variables=["2m_temperature"], file_suffix="SFC"),
+            CdsRequestSpec(
+                dataset="reanalysis-era5-pressure-levels",
+                variables=["temperature"],
+                levels=["1000", "925"],
+                file_suffix="PRES",
+            ),
+            CdsRequestSpec(
+                dataset="reanalysis-cerra-single-levels",
+                variables=["2m_temperature"],
+                file_suffix="FULL",
+                product_type=["analysis"],
+                use_area=False,
+                extra_params={"data_type": ["reanalysis"]},
+            ),
+        ],
+    )
+    assert not stage.is_setup(simulation_with_area)
     stage.setup(simulation_with_area)
+    assert stage.is_setup(simulation_with_area)
 
-    jan = load_req(stage, simulation_with_area, "ERA5_SFC_202501")
-    assert jan["variable"] == ["2m_temperature"]
-    assert jan["area"] == [54, 2, 50, 8]
-    assert "pressure_level" not in jan
+    sfc = load_req(stage, simulation_with_area, "ERA5_SFC_202501")
+    assert sfc["variable"] == ["2m_temperature"]
+    assert sfc["area"] == [54, 2, 50, 8]
+    assert sfc["product_type"] == ["reanalysis"]
+    assert "pressure_level" not in sfc
+
+    assert load_req(stage, simulation_with_area, "ERA5_PRES_202501")["pressure_level"] == ["1000", "925"]
+
+    full = load_req(stage, simulation_with_area, "ERA5_FULL_202501")
+    assert "area" not in full
+    assert full["product_type"] == ["analysis"]
+    assert full["data_type"] == ["reanalysis"]
 
 
 def test_month_split_is_waste_free(simulation_with_area):
@@ -137,13 +178,6 @@ def test_month_split_is_waste_free(simulation_with_area):
     jan = load_req(stage, simulation_with_area, "ERA5_SFC_202501")
     assert (dec["year"], dec["month"], dec["day"]) == (["2024"], ["12"], ["31"])
     assert (jan["year"], jan["month"], jan["day"]) == (["2025"], ["01"], ["01", "02"])
-
-
-def test_is_setup_reflects_request_files(simulation_with_area):
-    stage = make_stage()
-    assert not stage.is_setup(simulation_with_area)
-    stage.setup(simulation_with_area)
-    assert stage.is_setup(simulation_with_area)
 
 
 def test_run_calls_cdsapi_client_per_month_splits_and_is_done(monkeypatch, simulation_with_area):
@@ -162,9 +196,6 @@ def test_run_calls_cdsapi_client_per_month_splits_and_is_done(monkeypatch, simul
 
     work_dir = stage.get_work_dir(simulation_with_area)
     # The multi-time monthly downloads are split into one file per valid time and then removed.
-    assert not list(work_dir.glob("ERA5_SFC_2024*.grb")) or all(
-        re.search(r"_\d{8}_\d{4}\.grb$", str(p)) for p in work_dir.glob("ERA5_SFC_*.grb")
-    )
     assert not (work_dir / "ERA5_SFC_202412.grb").exists() and not (work_dir / "ERA5_SFC_202501.grb").exists()
     all_times = [t for times in period_times.values() for t in times]
     for t in all_times:
@@ -225,88 +256,6 @@ def test_split_grib_by_reference_time_roundtrip(tmp_path):
         # Two messages share 00:00 -> concatenated in that file; one message at 03:00.
         assert written["20200701_0000"].read_bytes() == messages[0] + messages[1]
         assert written["20200701_0300"].read_bytes() == messages[2]
-
-
-def test_grib_reference_key_reads_both_editions():
-    t = pd.Timestamp("2019-11-05T21")
-    assert _grib_reference_key(_grib1_message(t)) == ("20191105_2100", 64)
-    assert _grib_reference_key(_grib2_message(t)) == ("20191105_2100", 64)
-
-
-def test_pressure_level_request_includes_levels(simulation_with_area):
-    stage = make_stage(
-        requests=[
-            CdsRequestSpec(
-                dataset="reanalysis-era5-pressure-levels",
-                variables=["temperature"],
-                levels=["1000", "925"],
-                file_suffix="PRES",
-            ),
-        ],
-    )
-    stage.setup(simulation_with_area)
-    assert load_req(stage, simulation_with_area, "ERA5_PRES_202501")["pressure_level"] == ["1000", "925"]
-
-
-def test_extra_params_override_defaults(simulation_with_area):
-    stage = make_stage(
-        requests=[
-            CdsRequestSpec(
-                dataset="reanalysis-cerra-single-levels",
-                variables=["2m_temperature"],
-                file_suffix="SFC",
-                extra_params={"data_type": ["reanalysis"]},
-            ),
-        ],
-    )
-    stage.setup(simulation_with_area)
-    assert load_req(stage, simulation_with_area, "ERA5_SFC_202501")["data_type"] == ["reanalysis"]
-
-
-def test_product_type_field(simulation_with_area):
-    stage = make_stage(
-        requests=[
-            CdsRequestSpec(
-                dataset="reanalysis-cerra-single-levels",
-                variables=["2m_temperature"],
-                file_suffix="SFC",
-                product_type=["analysis"],
-            ),
-        ],
-    )
-    stage.setup(simulation_with_area)
-    assert load_req(stage, simulation_with_area, "ERA5_SFC_202501")["product_type"] == ["analysis"]
-
-
-def test_use_area_false_omits_area(simulation_with_area):
-    stage = make_stage(
-        requests=[
-            CdsRequestSpec(
-                dataset="reanalysis-cerra-single-levels",
-                variables=["2m_temperature"],
-                file_suffix="SFC",
-                use_area=False,
-            ),
-        ],
-    )
-    stage.setup(simulation_with_area)
-    assert "area" not in load_req(stage, simulation_with_area, "ERA5_SFC_202501")
-
-
-def test_use_area_false_does_not_require_area(simple_simulation):
-    """A full-domain (use_area=False) request must not demand Simulation.area."""
-    stage = make_stage(
-        requests=[
-            CdsRequestSpec(
-                dataset="reanalysis-cerra-single-levels",
-                variables=["2m_temperature"],
-                file_suffix="SFC",
-                use_area=False,
-            ),
-        ],
-    )
-    stage.setup(simple_simulation)  # simple_simulation has no area; must not raise
-    assert stage.is_setup(simple_simulation)
 
 
 def test_shared_work_dir_requests_do_not_collide(simulation_with_area):

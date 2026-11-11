@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import pytest
 from fixtures import simple_simulation
 
 from wrf_massive.base import Resources
@@ -9,12 +10,11 @@ from wrf_massive.stages.wrf import wrf as wrf_mod
 from wrf_massive.stages.wrf.wrf import WRFStage, is_wrf_successful
 
 
-def test_is_wrf_successful_requires_wrfout(tmp_path):
+def test_is_wrf_successful_requires_wrfout_and_success_marker(tmp_path):
     (tmp_path / "rsl.out.0000").write_text("SUCCESS COMPLETE WRF\n")
     assert not is_wrf_successful(tmp_path)  # success marker but no wrfout
+    (tmp_path / "rsl.out.0000").unlink()
 
-
-def test_is_wrf_successful_requires_success_marker(tmp_path):
     (tmp_path / "wrfout_d01_2020-07-01").write_text("x")
     assert not is_wrf_successful(tmp_path)  # wrfout present but run crashed before completing
     (tmp_path / "rsl.error.0000").write_text("Timing for main\n SUCCESS COMPLETE WRF\n")
@@ -36,17 +36,19 @@ def _make_wrf_stage(sim_dir, resources) -> WRFStage:
     )
 
 
-def test_run_passes_n_cpus_env(monkeypatch, simple_simulation):
+@pytest.mark.parametrize(
+    "resources, n_cpus",
+    [
+        (Resources(n_tasks=8, cpus_per_task=1, mem_per_cpu="1G"), "8"),
+        (None, None),  # inherit the parent environment (SLURM-driven, or serial fallback)
+    ],
+)
+def test_run_passes_n_cpus_env(monkeypatch, simple_simulation, resources, n_cpus):
     captured = {}
     monkeypatch.setattr(wrf_mod, "run_cmd_logged", lambda *a, env=None, **k: captured.update(env=env))
-    stage = _make_wrf_stage(simple_simulation.sim_dir, Resources(n_tasks=8, cpus_per_task=1, mem_per_cpu="1G"))
+    stage = _make_wrf_stage(simple_simulation.sim_dir, resources)
     stage.run(simple_simulation)
-    assert captured["env"] is not None and captured["env"]["N_CPUS"] == "8"
-
-
-def test_run_without_resources_inherits_env(monkeypatch, simple_simulation):
-    captured = {}
-    monkeypatch.setattr(wrf_mod, "run_cmd_logged", lambda *a, env=None, **k: captured.update(env=env))
-    stage = _make_wrf_stage(simple_simulation.sim_dir, None)
-    stage.run(simple_simulation)
-    assert captured["env"] is None  # inherit the parent environment (SLURM-driven, or serial fallback)
+    if n_cpus is None:
+        assert captured["env"] is None
+    else:
+        assert captured["env"]["N_CPUS"] == n_cpus

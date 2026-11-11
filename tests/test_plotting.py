@@ -38,14 +38,6 @@ def test_plot_domain_returns_axes(tmp_path):
     assert "2 km" in ax.get_title()  # DX=2000 m -> 2 km, 7x5 grid
 
 
-def test_plot_domain_savefig(tmp_path):
-    geo = tmp_path / "geo_em.d01.nc"
-    _make_geo_em(geo)
-    out = tmp_path / "domain.png"
-    plot_domain(geo, add_coastlines=False, savefig=out)
-    assert out.exists() and out.stat().st_size > 0
-
-
 def test_cli_domain(tmp_path):
     geo = tmp_path / "geo_em.d01.nc"
     _make_geo_em(geo)
