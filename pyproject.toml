@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wrf_massive"
-version = "1.0.0"
+version = "2.0.0"
 authors = [{ name = "Maximilian Pierzyna", email = "mail@maximilian-pierzyna.de" }]
 description = "Flexible, scalable orchestration of WRF simulations"
 readme = "README.md"
@@ -50,7 +50,7 @@ extend-exclude = "src/wrf_massive/third_party/"  # vendored, kept unchanged
 
 # Release: `uvx bump-my-version bump patch|minor|major` updates the files below, commits and tags
 [tool.bumpversion]
-current_version = "1.0.0"
+current_version = "2.0.0"
 commit = true
 tag = true
 tag_name = "v{new_version}"
