@@ -83,6 +83,15 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   relative to the root; a missing one is a `UsageError`). It runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_FILE] = <abs env file>`; sbatch exports the
   environment by default, so `wrf-massive run` in the job picks up the same env file. `--debug` prints the command
   instead (dry run) and sets the `wrf_massive` logger to DEBUG.
+- **Monitoring** (`monitor.py`, `monitor.sh`): with `$WRF_MASSIVE_MONITOR=<s>`, `run` wraps each stage (one
+  `p.run(s, stages=[name])` per stage) in `monitor()`, which starts the bundled `monitor.sh` as a child process (so
+  it sits in the SLURM job's cgroup), waits for its first sample (its TERM trap is set by then) and terminates it
+  afterwards (the trap writes a last sample). Memory: job-level cgroup `job_<SLURM_JOB_ID>` found via
+  `/proc/self/cgroup` (v2: `memory.current`, `anon` of `memory.stat`, `memory.peak`, `memory.max`; v1:
+  `memory.usage_in_bytes`, `total_rss`, `memory.max_usage_in_bytes`, `memory.limit_in_bytes`), else `/proc/meminfo`
+  (`source=node`). Disk: `du -s -k -D <stage work dir>` (`-D` follows a work dir symlinked to tmp storage, but no
+  symlinks inside it). Tests fake the cgroup tree via `_WRF_MASSIVE_CGROUP_ROOT`/`_WRF_MASSIVE_PROC_CGROUP`.
+  Multi-node jobs: first node only.
 - **`init`** copies every file in `templates/workspace` via `importlib.resources`, renaming per `TEMPLATE_RENAMES`
   (`env.tmpl.yaml` so the template dir is never mistaken for a workspace by the upward env search, `gitignore` as in
   the stage dirs). Template files carry no SPDX headers (they end up in users' workspaces); REUSE.toml covers them.

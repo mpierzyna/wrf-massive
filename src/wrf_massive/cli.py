@@ -23,6 +23,7 @@ import click
 
 from wrf_massive.base import Pipeline, Simulation
 from wrf_massive.log import get_logger
+from wrf_massive.monitor import get_monitor_interval, monitor, monitor_prefix
 from wrf_massive.workspace import (
     DEFAULT_ENV_FILE,
     ENV_FILE_ENVVAR,
@@ -293,9 +294,15 @@ def init_sims(state: CliState, root: str | None, sim_module: str, sim_name: str)
 def run(state: CliState, stages: str | None, sim_dirs: Tuple[str, ...], force_setup: bool, force_run: bool):
     """Run stages for simulations in SIM_DIRS.
 
-    If multiple stages are specified, they are run sequentially.
+    If multiple stages are specified, they are run sequentially. If $WRF_MASSIVE_MONITOR is set to a number of
+    seconds, the memory and disk usage of each stage is logged at that interval to
+    `<sim_dir>/slurm/<stage>_<job id>_{mem,disk}.csv`.
     """
     sim_dirs = _require_sim_dirs(sim_dirs)
+    try:
+        interval = get_monitor_interval()
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
     p = state.pipeline
     stages = _get_stages(p, stages)
     for sim_dir in sim_dirs:
@@ -305,7 +312,13 @@ def run(state: CliState, stages: str | None, sim_dirs: Tuple[str, ...], force_se
             click.echo("Force setup enabled.")
         if force_run:
             click.echo("Force run enabled.")
-        p.run(s, stages=stages, force_setup=force_setup, force_run=force_run)
+        if interval is None:
+            p.run(s, stages=stages, force_setup=force_setup, force_run=force_run)
+            continue
+        for stage_name in stages:  # one monitor per stage, on that stage's work dir
+            work_dir = p[stage_name].get_work_dir(s, create=False)
+            with monitor(interval, work_dir, monitor_prefix(s.sim_dir, stage_name)):
+                p.run(s, stages=[stage_name], force_setup=force_setup, force_run=force_run)
 
 
 @main.command()

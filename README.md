@@ -21,6 +21,7 @@ Features:
 - **SLURM submission**: every stage of every simulation becomes a SLURM job with its own resources (nodes, tasks,
   memory, walltime), chained by dependencies. Concurrency can be capped per stage, e.g. for downloads.
 - **Restartable**: finished stages are marked as done and skipped on re-runs.
+- **Monitoring**: optionally log the memory and disk usage of each stage to CSV files, also within SLURM jobs.
 - **Fast storage**: stages can run in temporary directories, e.g., a ramdisk or scratch filesystem. 
   Results are moved back automatically when the stage finishes.
 

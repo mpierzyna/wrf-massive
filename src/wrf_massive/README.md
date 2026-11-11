@@ -145,6 +145,28 @@ stage that would overwhelm a rate-limited remote server — set `max_concurrent`
 simulations you submit together or how many CPUs are free.
 
 
+### Monitoring memory and disk usage
+To see how much memory and disk space a stage needs, set `WRF_MASSIVE_MONITOR` to a sampling interval in seconds:
+
+```bash
+WRF_MASSIVE_MONITOR=60 wrf-massive submit test_1   # the jobs inherit the variable
+WRF_MASSIVE_MONITOR=10 wrf-massive run test_1      # also works locally
+```
+
+`wrf-massive run` then logs, for each stage, two CSV files next to the SLURM output:
+
+- `<sim_dir>/slurm/<stage>_<job id>_mem.csv` — `used_mib` (including the file cache, e.g. of written output, which
+  the kernel frees before a job runs out of memory), `process_mib` (the memory of the processes themselves, which is
+  what counts for `mem_per_cpu`), `peak_mib` and `limit_mib`. In a SLURM job, these are the values of the job on its
+  first node, so other jobs on a shared node are not counted (`source` is `cgroup1`/`cgroup2`). Outside SLURM, the
+  values are those of the whole machine (`source=node`).
+- `<sim_dir>/slurm/<stage>_<job id>_disk.csv` — size of the stage's work dir in KiB, also if it is on temporary
+  storage.
+
+Outside SLURM, `<job id>` is `local-<timestamp>`. Keep the interval at a minute or more on network file systems,
+since measuring the disk usage of a large work dir puts load on them. SLURM's own `seff <job id>` or
+`sacct -j <job id> --format=MaxRSS` report the exact peak memory per task after the job, without monitoring.
+
 ### Helpers and conventions
 `base.py` defines small helper validators used by the Pydantic models:
 - `_parse_datetime(v)` — accepts either a datetime or ISO format string and returns a `datetime.datetime`.
