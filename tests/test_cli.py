@@ -248,6 +248,37 @@ def test_submit_passes_env_file_to_jobs(ws, fake_sbatch):
     assert "--dependency=afterok:101" in cmd_b
 
 
+def test_submit_job_file_from_env(ws, fake_sbatch):
+    """Without --jobfile, the env file's `job_file` (relative to the workspace root) is used; --jobfile overrides it."""
+    write_env(ws / "env.yaml", pipeline="p_test", job_file="job.sh")
+    (ws / "job.sh").touch()
+    (ws / "other.sh").touch()
+    os.chdir(ws / "sim_1")
+
+    result = invoke("submit", "-s", "a", ".")
+    assert result.exit_code == 0, result.output
+    assert fake_sbatch[-1][0][-3] == str(ws / "job.sh")
+
+    os.chdir(ws / "sim_1")
+    result = invoke("submit", "-s", "a", "-j", "../other.sh", ".")
+    assert result.exit_code == 0, result.output
+    assert fake_sbatch[-1][0][-3] == str(ws / "other.sh")
+
+
+@pytest.mark.parametrize(
+    "job_file, message",
+    [(None, "No job script: set `job_file`"), ("missing.sh", "does not exist")],
+)
+def test_submit_without_job_script(ws, fake_sbatch, job_file, message):
+    write_env(ws / "env.yaml", pipeline="p_test", **({"job_file": job_file} if job_file else {}))
+
+    result = invoke("submit", "sim_1")
+
+    assert result.exit_code != 0
+    assert message in result.output
+    assert not fake_sbatch
+
+
 def test_submit_debug_is_dry_run(ws, fake_sbatch):
     (ws / "job.sh").touch()
 

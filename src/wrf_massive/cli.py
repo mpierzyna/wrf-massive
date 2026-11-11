@@ -339,20 +339,33 @@ def teardown(state: CliState, stages: str | None, all_files: bool, sim_dirs: Tup
 
 @main.command()
 @click.option("--stages", "-s", type=str, required=False, default=None, help="Comma-separated stages. Default: all.")
-@click.option("--jobfile", "-j", type=click.Path(exists=True, dir_okay=False), required=True, help="SLURM job script.")
+@click.option(
+    "--jobfile",
+    "-j",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="SLURM job script. Overrides `job_file` of the env file.",
+)
 @click.option("--dep-job", "-d", type=int, required=False, default=None, help="Job ID the first stage depends on.")
 @click.argument("sim_dirs", type=click.Path(exists=True, file_okay=False), nargs=-1)
 @pass_state
-def submit(state: CliState, stages: str | None, jobfile: str, dep_job: int | None, sim_dirs: Tuple[str, ...]):
+def submit(state: CliState, stages: str | None, jobfile: str | None, dep_job: int | None, sim_dirs: Tuple[str, ...]):
     """Submit stages of simulations in SIM_DIRS to SLURM, one job per stage.
 
     Stages of a simulation depend on each other; `--dep-job` additionally makes the first stage of every simulation
-    wait for another job. The job script is called with the stage name and simulation dir as arguments and should run
-    `wrf-massive run --stages=$1 $2`.
+    wait for another job. The job script is `job_file` of the env file, unless `--jobfile` is given. It is called with
+    the stage name and simulation dir as arguments and should run `wrf-massive run --stages=$1 $2`.
     """
     sim_dirs = _require_sim_dirs(sim_dirs)
-    jobfile = _abspath(jobfile)
+    jobfile = _abspath(jobfile) if jobfile is not None else None
     p = state.pipeline
+    if jobfile is None:
+        ws = state.workspace
+        jobfile = ws.job_file
+        if jobfile is None:
+            raise click.UsageError(f"No job script: set `job_file` in '{ws.env_file}' or pass --jobfile.")
+        if not jobfile.is_file():
+            raise click.UsageError(f"Job script '{jobfile}' (`job_file` in '{ws.env_file}') does not exist.")
     stages = _get_stages(p, stages, require_resources=True)
 
     # Submit each stage of each simulation with dependency on previous stage

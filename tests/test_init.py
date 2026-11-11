@@ -78,7 +78,7 @@ def test_template_workspace_loads(new_ws, tmp_path):
     assert result.exit_code == 0, result.output
     assert (new_ws / "test_1" / "simulation.yaml").exists()
 
-    result = invoke("--debug", "submit", "-j", "slurm.job.sh", "test_1")
+    result = invoke("--debug", "submit", "test_1")  # job script from `job_file` in env.yaml
     assert result.exit_code == 0, result.output
     assert result.output.count("Dry run") == 5  # cerra, era5, wps, wrf, sim_done
 

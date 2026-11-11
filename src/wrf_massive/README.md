@@ -196,7 +196,7 @@ directory); existing files are only overwritten with `--force`. The template con
 
 | File | Purpose |
 |---|---|
-| `env.yaml` | Machine-specific settings: paths to WPS/WRF, which pipeline to use, log level. |
+| `env.yaml` | Machine-specific settings: paths to WPS/WRF, which pipeline and job script to use, log level. |
 | `pipeline.py` | Assembles stages into named pipelines (`p_default`: CERRA + ERA5 from CDS, WPS, WRF, `MarkDone`). |
 | `simulations.py` | Defines `Simulation` objects (period, warmup, namelist settings, sim dir, area). |
 | `namelist.tmpl.wps`, `namelist.tmpl.input` | Jinja2 templates for the WPS/WRF namelists, incl. the domain. |
@@ -210,6 +210,8 @@ The template is a starting point and does not run as is: set the WPS/WRF paths i
 ### The env file
 The env file contains the settings that differ between machines:
 - `pipeline` (required) — name of the pipeline variable in `pipeline.py` to use, e.g. `p_default`.
+- `job_file` (optional) — SLURM job script for `wrf-massive submit`, relative to the workspace root. `--jobfile`
+  overrides it; without either, `submit` stops with an error.
 - `log_level` (optional) — `debug`, `info` (default), `warning`, `error` or `critical`.
 - anything else your `pipeline.py` needs, e.g. the `wps` and `wrf` groups of the template.
 
@@ -222,7 +224,7 @@ To work on several machines, keep one env file per machine (e.g. `env_laptop.yam
 `--env-file`/`-e` or the `WRF_MASSIVE_ENV_FILE` environment variable (`env.yaml` by default):
 
 ```bash
-wrf-massive -e env_hpc.yaml submit -j slurm.job.sh test_1
+wrf-massive -e env_hpc.yaml submit test_1
 ```
 
 Alternatively, symlink the active one to `env.yaml` (`ln -sf env_hpc.yaml env.yaml`).
@@ -244,8 +246,9 @@ wrf-massive init-sims simulations.py sim_test   # create simulation dirs from va
 wrf-massive run test_1                           # run all stages locally
 wrf-massive run --stages wps,wrf test_1          # run a subset of stages
 wrf-massive teardown --stages wrf test_1         # move results back from temporary storage
-wrf-massive submit -j slurm.job.sh test_1        # submit each stage as its own SLURM job
-wrf-massive --debug submit -j slurm.job.sh test_1   # print the sbatch commands instead of submitting
+wrf-massive submit test_1                        # submit each stage as its own SLURM job (job_file of env file)
+wrf-massive submit -j other.job.sh test_1       # ... with another job script
+wrf-massive --debug submit test_1                # print the sbatch commands instead of submitting
 ```
 
 `init-sims` creates the simulation dirs in the workspace root unless `--root` is given. `submit` calls the job script

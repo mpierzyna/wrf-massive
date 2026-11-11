@@ -79,7 +79,8 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   cwd (`os.path.abspath`), then touches `state.workspace`/`state.pipeline`, which activates (chdirs) lazily. This also
   keeps `--help`, `init` and the `plot` group working outside a workspace. The `plot` commands import `plotting`
   inside the command (xarray/matplotlib add ~0.3 s to every CLI start otherwise). Sim dirs are therefore absolute inside commands.
-- **`submit`** runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_FILE] = <abs env file>`; sbatch exports the
+- **`submit`** takes the job script from `--jobfile`, else from the env file's `job_file` (`Workspace.job_file`,
+  relative to the root; a missing one is a `UsageError`). It runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_FILE] = <abs env file>`; sbatch exports the
   environment by default, so `wrf-massive run` in the job picks up the same env file. `--debug` prints the command
   instead (dry run) and sets the `wrf_massive` logger to DEBUG.
 - **`init`** copies every file in `templates/workspace` via `importlib.resources`, renaming per `TEMPLATE_RENAMES`
@@ -225,7 +226,7 @@ wrf-massive init-sims simulations.py sim_test     # create sim_dir test_1 (in th
 wrf-massive run test_1                            # run all stages locally
 wrf-massive run --stages wps test_1               # run a subset of stages
 wrf-massive teardown --stages wps test_1          # force work dirs back from tmp storage (--all ignores globs)
-wrf-massive -e env_hpc.yaml submit -j slurm.job.sh test_1   # submit each stage as its own sbatch job
+wrf-massive -e env_hpc.yaml submit test_1        # submit each stage as its own sbatch job (job_file of env file)
 ```
 
 `uv sync` installs everything except `wrf-python`; `uv sync --extra postproc` adds it (needs a Fortran compiler).

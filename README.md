@@ -111,7 +111,7 @@ uv add --editable ./submodules/wrf-massive              # or with --extra postpr
    ```bash
    wrf-massive init-sims simulations.py sim_test   # create simulation dir test_1
    wrf-massive run test_1                           # run all stages locally
-   wrf-massive submit -j slurm.job.sh test_1        # or submit each stage as SLURM job
+   wrf-massive submit test_1                        # or submit each stage as SLURM job
    ```
 
 `wrf-massive --help` lists all commands, and `wrf-massive <command> --help` their options.

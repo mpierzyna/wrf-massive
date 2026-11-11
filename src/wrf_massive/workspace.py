@@ -139,6 +139,15 @@ class Workspace:
         return module
 
     @property
+    def job_file(self) -> pathlib.Path | None:
+        """SLURM job script of the env file's `job_file` key (relative to the root), or None if not set."""
+        value = self.env.get("job_file")
+        if not value:
+            return None
+        path = pathlib.Path(value)
+        return path if path.is_absolute() else self.root / path
+
+    @property
     def pipeline(self) -> Pipeline:
         """The pipeline named by the env file's `pipeline` key, loaded from the workspace's `pipeline.py`."""
         if self._pipeline is None:
