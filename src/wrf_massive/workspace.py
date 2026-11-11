@@ -34,10 +34,13 @@ PIPELINE_MODULE = "pipeline"  # `pipeline.py` in the workspace root
 DEFAULT_LOG_LEVEL = "info"
 LOG_FORMAT = "%(asctime)s %(levelname)s:%(name)s:%(message)s"
 
+# Env file of a new workspace (committed), which `init_workspace` symlinks to env.yaml (ignored by git)
+INIT_ENV_FILE = "env_local.yaml"
+
 # Packaged files copied by `init_workspace`, mapped to their name in the new workspace. Files are stored under a
 # different name in the package where the real name would be picked up by git (`.gitignore`) or by the env file
-# search (`env.yaml`).
-TEMPLATE_RENAMES = {"env.tmpl.yaml": ENV_FILE, "gitignore": ".gitignore"}
+# search (`env.tmpl.yaml`, as a template dir with an env file would be taken for a workspace).
+TEMPLATE_RENAMES = {"env.tmpl.yaml": INIT_ENV_FILE, "gitignore": ".gitignore"}
 
 
 class WorkspaceError(Exception):
@@ -210,14 +213,16 @@ def template_files() -> Dict[str, str]:
 
 
 def init_workspace(directory: str | pathlib.Path, force: bool = False) -> List[pathlib.Path]:
-    """Copy the workspace template into `directory` (created if missing). Returns the written files.
+    """Copy the workspace template into `directory` (created if missing) and symlink env.yaml to its env file.
 
-    Refuses to overwrite existing files unless `force` is set.
+    Returns the written files, including the symlink. Refuses to overwrite existing files unless `force` is set.
     """
     directory = _abspath(directory)
     files = template_files()
+    env_link = directory / ENV_FILE
 
-    existing = [directory / dst for dst in files.values() if (directory / dst).exists()]
+    targets = [directory / dst for dst in files.values()] + [env_link]
+    existing = [p for p in targets if p.exists() or p.is_symlink()]
     if existing and not force:
         raise WorkspaceError(
             f"Refusing to overwrite existing files in '{directory}': {[p.name for p in existing]}. "
@@ -231,4 +236,9 @@ def init_workspace(directory: str | pathlib.Path, force: bool = False) -> List[p
         target = directory / dst
         target.write_bytes(tmpl_dir.joinpath(src).read_bytes())
         written.append(target)
+
+    if env_link.exists() or env_link.is_symlink():
+        env_link.unlink()
+    env_link.symlink_to(INIT_ENV_FILE)  # relative, so the workspace can be moved
+    written.append(env_link)
     return written

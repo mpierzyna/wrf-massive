@@ -219,15 +219,16 @@ directory); existing files are only overwritten with `--force`. The template con
 
 | File | Purpose |
 |---|---|
-| `env.yaml` | Machine-specific settings: paths to WPS/WRF, which pipeline and job script to use, log level. |
+| `env_local.yaml` | Machine-specific settings: paths to WPS/WRF, which pipeline and job script to use, log level. |
+| `env.yaml` | Symlink to the env file of the current machine (`env_local.yaml`), ignored by git. |
 | `pipeline.py` | Assembles stages into named pipelines (`p_default`: CERRA + ERA5 from CDS, WPS, WRF, `MarkDone`). |
 | `simulations.py` | Defines `Simulation` objects (period, warmup, namelist settings, sim dir, area). |
 | `namelist.tmpl.wps`, `namelist.tmpl.input` | Jinja2 templates for the WPS/WRF namelists, incl. the domain. |
 | `myoutfields.txt` | Additional WRF output fields. |
 | `slurm.job.sh` | Job script for `wrf-massive submit`. |
-| `.gitignore` | Ignores SLURM output, forcing files and the example simulation. |
+| `.gitignore` | Ignores `env.yaml`, SLURM output, forcing files and the example simulation. |
 
-The template is a starting point and does not run as is: set the WPS/WRF paths in `env.yaml`, set up CDS credentials
+The template is a starting point and does not run as is: set the WPS/WRF paths in `env_local.yaml`, set up CDS credentials
 (`~/.cdsapirc` or `CDSAPI_URL`/`CDSAPI_KEY`) and adapt the domain and simulations to your study.
 
 ### The env file

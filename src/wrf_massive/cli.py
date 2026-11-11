@@ -24,7 +24,14 @@ import click
 from wrf_massive.base import Pipeline, Simulation
 from wrf_massive.log import get_logger
 from wrf_massive.monitor import get_monitor_interval, monitor, monitor_prefix
-from wrf_massive.workspace import ENV_FILE, ENV_HASH_ENVVAR, Workspace, WorkspaceError, init_workspace
+from wrf_massive.workspace import (
+    ENV_FILE,
+    ENV_HASH_ENVVAR,
+    INIT_ENV_FILE,
+    Workspace,
+    WorkspaceError,
+    init_workspace,
+)
 
 logger = get_logger()
 
@@ -203,7 +210,7 @@ def main(ctx: click.Context, debug: bool):
 def init(directory: str, force: bool):
     """Create a new workspace in DIRECTORY (default: current dir) from the packaged template.
 
-    The workspace contains an env file, `pipeline.py`, `simulations.py`, WPS/WRF namelist templates and a SLURM job
+    The workspace contains an env file (`env_local.yaml`, symlinked to `env.yaml`), `pipeline.py`, `simulations.py`, WPS/WRF namelist templates and a SLURM job
     script, which serve as starting point for your own setup.
     """
     try:
@@ -213,10 +220,11 @@ def init(directory: str, force: bool):
 
     root = _abspath(directory)
     for path in written:
-        click.echo(f"Created {path.relative_to(root)}")
+        target = f" -> {os.readlink(path)}" if path.is_symlink() else ""
+        click.echo(f"Created {path.relative_to(root)}{target}")
     click.echo(
         f"\nInitialised workspace in '{root}'. Next steps:\n"
-        f"  1. Set the WPS/WRF paths in {ENV_FILE}.\n"
+        f"  1. Set the WPS/WRF paths in {INIT_ENV_FILE} ({ENV_FILE} links to it; rename it per machine if you like).\n"
         f"  2. Set up CDS credentials (~/.cdsapirc) for the forcing download.\n"
         f"  3. Adapt the domain in namelist.tmpl.wps and the simulations in simulations.py.\n"
         f"  4. Run `wrf-massive init-sims simulations.py sim_test`, then `wrf-massive run test_1`."

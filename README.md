@@ -99,7 +99,7 @@ uv add --editable ./submodules/wrf-massive              # or with --extra postpr
    wrf-massive init my_domain && cd my_domain
    ```
 
-2. Adapt it to your study: the WPS/WRF paths in `env.yaml`, the domain in `namelist.tmpl.wps` and
+2. Adapt it to your study: the WPS/WRF paths in `env_local.yaml` (`env.yaml` links to it), the domain in `namelist.tmpl.wps` and
    `namelist.tmpl.input`, the pipeline in `pipeline.py` and the simulations in `simulations.py`. Check the domain
    before running anything:
 

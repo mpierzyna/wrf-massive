@@ -49,7 +49,7 @@ src/wrf_massive/        # generic, project-agnostic orchestration package
     misc/                 # small utility stages (array.py, done.py, gc.py)
     utils.py               # render_template, run_cmd_logged, namelist template loader/getter
   templates/workspace/    # files copied by `wrf-massive init` (the reference for how to build a workspace)
-    env.tmpl.yaml          # -> env.yaml: WPS/WRF paths (placeholders), pipeline name, log_level
+    env.tmpl.yaml          # -> env_local.yaml (+ symlink env.yaml): WPS/WRF paths (placeholders), pipeline, log_level
     gitignore              # -> .gitignore
     pipeline.py            # p_default: CERRA + ERA5 via PullCdsStage -> WPS -> WRF -> MarkDone
     simulations.py         # sim_test (1 day, NL domain, area set for the ERA5 crop)
@@ -98,7 +98,9 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   Multi-node jobs: first node only.
 - **`init`** copies every file in `templates/workspace` via `importlib.resources`, renaming per `TEMPLATE_RENAMES`
   (`env.tmpl.yaml` so the template dir is never mistaken for a workspace by the upward env search, `gitignore` as in
-  the stage dirs). Template files carry no SPDX headers (they end up in users' workspaces); REUSE.toml covers them.
+  the stage dirs), then symlinks `env.yaml -> env_local.yaml` (relative; the template `.gitignore` ignores `/env.yaml`,
+  so the env file is committed and the per-machine link is not). An existing `env.yaml`, even a dangling link, counts
+  as an existing file for the `--force` check. Template files carry no SPDX headers (they end up in users' workspaces); REUSE.toml covers them.
   `tests/test_init.py` checks the template imports and submits (dry run) once its env paths point to existing dirs —
   keep it passing when changing the template or stage signatures.
 
@@ -238,7 +240,7 @@ vs `reanalysis-*-single-levels`).
 
 ```bash
 uv sync                                           # install/refresh env (installs the `wrf-massive` command)
-wrf-massive init /path/to/my_ws && cd /path/to/my_ws   # new workspace from the template; set paths in env.yaml
+wrf-massive init /path/to/my_ws && cd /path/to/my_ws   # new workspace from the template; set paths in env_local.yaml
 wrf-massive init-sims simulations.py sim_test     # create sim_dir test_1 (in the workspace root) from a Simulation
 wrf-massive run test_1                            # run all stages locally
 wrf-massive run --stages wps test_1               # run a subset of stages
