@@ -20,6 +20,16 @@ if TYPE_CHECKING:
 logger = get_logger("tmp_dir")
 
 
+def tmp_sim_dir(tmp_root, s: Simulation) -> pathlib.Path:
+    """Directory of simulation `s` on temporary storage: `<tmp_root>/<parent dir of sim_dir>/<sim name>`.
+
+    Sim dirs sit in the workspace root, so the parent is the workspace and simulations of the same name in different
+    workspaces sharing one scratch root (e.g. `test_1` of two domains) don't clash.
+    """
+    sim_dir = pathlib.Path(os.path.abspath(s.sim_dir))
+    return pathlib.Path(tmp_root) / sim_dir.parent.name / sim_dir.name
+
+
 def setup_tmp_work_dir(tmp_root, s: Simulation, stage: Stage) -> pathlib.Path:
     """Set up stage work dir in temporary location, symlinking original work dir to tmp location.
     Note: Stage setup must still be called after this!
@@ -39,7 +49,7 @@ def setup_tmp_work_dir(tmp_root, s: Simulation, stage: Stage) -> pathlib.Path:
         Path to temporary work dir of stage
     """
     work_dir_orig = stage.get_work_dir(s, create=False)  # don't create or symlink/move fails!
-    work_dir_tmp = tmp_root / s.name / stage.work_dir
+    work_dir_tmp = tmp_sim_dir(tmp_root, s) / stage.work_dir
     work_dir_tmp.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"-> Setting up {stage.name} in tmp dir '{work_dir_tmp}'...")
 

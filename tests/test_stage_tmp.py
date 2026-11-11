@@ -9,7 +9,7 @@ import pathlib
 import shutil
 
 import pytest
-from fixtures import StageA, StageFail, simple_simulation
+from fixtures import StageA, StageFail, simple_simulation, tmp_sim_dir
 
 from wrf_massive.base import Pipeline, Simulation
 from wrf_massive.stages.misc import MarkDone
@@ -40,7 +40,7 @@ def test_roundtrip_via_pipeline(simple_simulation: Simulation, tmp_root, globs):
 
     assert stage.was_symlinked, "stage did not run in the tmp dir"
     work_dir = stage.get_work_dir(simple_simulation)
-    tmp_dir = tmp_root / simple_simulation.name / "a"
+    tmp_dir = tmp_sim_dir(tmp_root, simple_simulation) / "a"
     assert not work_dir.is_symlink()
     assert (work_dir / "result.txt").exists()
     if globs is None:
@@ -68,7 +68,7 @@ def test_failure_leaves_results_in_tmp_and_rerun_resumes(simple_simulation: Simu
         Pipeline(a=stage).run_stage(simple_simulation, "a")
 
     work_dir = stage.get_work_dir(simple_simulation)
-    work_dir_tmp = tmp_root / simple_simulation.name / "a"
+    work_dir_tmp = tmp_sim_dir(tmp_root, simple_simulation) / "a"
     assert work_dir.is_symlink()
     assert pathlib.Path(os.readlink(work_dir)) == work_dir_tmp
     assert (work_dir / "partial.txt").exists()
@@ -96,7 +96,7 @@ def test_forced_teardown(simple_simulation: Simulation, tmp_root, all_files):
     p.run(simple_simulation)
 
     work_dir = stage.get_work_dir(simple_simulation)
-    tmp_dir = tmp_root / simple_simulation.name / "a"
+    tmp_dir = tmp_sim_dir(tmp_root, simple_simulation) / "a"
     assert work_dir.is_symlink(), "tmp_skip_teardown should leave the work dir in tmp"
     (work_dir / ".done").touch()
     (simple_simulation.sim_dir / ".done").touch()
@@ -153,7 +153,7 @@ def test_rerun_after_tmp_root_wiped(simple_simulation: Simulation, tmp_root):
     with pytest.raises(RuntimeError):
         Pipeline(a=stage).run_stage(simple_simulation, "a")
 
-    shutil.rmtree(tmp_root / simple_simulation.name)  # scratch cleaned between jobs
+    shutil.rmtree(tmp_sim_dir(tmp_root, simple_simulation))  # scratch cleaned between jobs
     assert stage.get_work_dir(simple_simulation, create=False).is_symlink()
 
     ok = StageA(work_dir="a", tmp_work_root=tmp_root)
@@ -179,4 +179,4 @@ def test_finished_stage_is_not_relocated(simple_simulation: Simulation, tmp_root
 
     assert not stage.was_symlinked, "stage was re-run"
     assert not work_dir.is_symlink()
-    assert not any((tmp_root / simple_simulation.name).glob("a/*"))
+    assert not any((tmp_sim_dir(tmp_root, simple_simulation)).glob("a/*"))

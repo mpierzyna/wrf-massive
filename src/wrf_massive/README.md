@@ -63,8 +63,9 @@ Some stages are much faster if they work on a ramdisk, a node-local SSD or a scr
     WRFStage(work_dir="3_wrf", tmp_work_root="/scratch-shared/me", ...)
 ```
 
-While the stage runs, its work directory lives in `<tmp_work_root>/<simulation name>/<work_dir>` and the usual
-location inside `sim_dir` is a symlink pointing there. Results are moved back when the stage finishes. **You do not
+While the stage runs, its work directory lives in `<tmp_work_root>/<workspace name>/<simulation name>/<work_dir>`
+and the usual location inside `sim_dir` is a symlink pointing there. The workspace name keeps simulations of several
+workspaces apart, so they can share one scratch root even if their simulations have the same names. Results are moved back when the stage finishes. **You do not
 have to change anything in your stage implementation**: `get_work_dir()` keeps returning the same path as always,
 and the filesystem takes care of the redirection.
 

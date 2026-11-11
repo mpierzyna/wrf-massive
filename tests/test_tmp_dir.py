@@ -8,8 +8,21 @@ pipeline in `test_stage_tmp.py`."""
 import pytest
 from fixtures import StageA, simple_simulation
 
-from wrf_massive.base import Resources
-from wrf_massive.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir
+from wrf_massive.base import Resources, Simulation
+from wrf_massive.tmp_dir import setup_tmp_work_dir, teardown_tmp_work_dir, tmp_sim_dir
+
+
+def _sim(sim_dir) -> Simulation:
+    return Simulation(sim_dir=sim_dir, settings={}, warmup_h=12, begin="2025-01-01", end="2025-01-02")
+
+
+def test_tmp_sim_dir_prefixed_with_workspace(tmp_path):
+    """Sims of the same name in different workspaces sharing one scratch root must not clash."""
+    scratch = tmp_path / "scratch"
+    assert [tmp_sim_dir(scratch, _sim(tmp_path / ws / "test_1")) for ws in ("alps", "baltics")] == [
+        scratch / "alps" / "test_1",
+        scratch / "baltics" / "test_1",
+    ]
 
 
 def test_setup_moves_existing_content(tmp_path, simple_simulation):

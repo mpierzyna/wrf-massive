@@ -6,7 +6,7 @@ import os
 import pathlib
 
 import pytest
-from fixtures import StageA, StageB, StageFail, StageReadsOther, simple_simulation
+from fixtures import StageA, StageB, StageFail, StageReadsOther, simple_simulation, tmp_sim_dir
 
 from wrf_massive.base import Pipeline, Resources, Simulation
 from wrf_massive.stages.misc import MarkDone, StageArray
@@ -71,7 +71,7 @@ def test_tmp_root_via_pipeline(simple_simulation: Simulation, tmp_path_factory):
         assert not stage.get_work_dir(simple_simulation).is_symlink()
         assert (stage.get_work_dir(simple_simulation) / "result.txt").exists()
     assert not (stage_a.get_work_dir(simple_simulation) / "setup.txt").exists()  # not matched by the globs
-    assert (tmp_root / simple_simulation.name / "a" / "setup.txt").exists()
+    assert (tmp_sim_dir(tmp_root, simple_simulation) / "a" / "setup.txt").exists()
     assert not simple_simulation.sim_dir.is_symlink()
     assert (simple_simulation.sim_dir / ".done").exists()
     assert sa.is_done(simple_simulation)

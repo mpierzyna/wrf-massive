@@ -115,9 +115,13 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   `Stage.tmp_work_dir(s)` (a `@contextlib.contextmanager` wrapping `tmp_dir.py`'s `setup_tmp_work_dir` /
   `teardown_tmp_work_dir`) and is entered by the *driver* — `Pipeline.run_stage` wraps its whole setup/run block
   in it. Concrete stages therefore need **no** changes: the work dir is moved to
-  `<tmp_work_root>/<sim.name>/<work_dir>` and the original path becomes a symlink to it, so `get_work_dir()` keeps
+  `<tmp_work_root>/<workspace>/<sim.name>/<work_dir>` and the original path becomes a symlink to it, so `get_work_dir()` keeps
   returning the same path and the kernel does the redirection (this also makes cross-stage reads like
-  `s.sim_dir / self.met_em_dir` follow the *other* stage's symlink for free). Knobs: `tmp_teardown_globs` (move only
+  `s.sim_dir / self.met_em_dir` follow the *other* stage's symlink for free). The `<workspace>` prefix
+  (`tmp_dir.tmp_sim_dir`) is the name of the sim dir's parent (sim dirs sit in the workspace root), so workspaces
+  sharing a scratch root don't clash on equal sim names; derived from the sim dir alone, not from the CLI's workspace,
+  so it is the same in notebooks and tests. Setup/teardown follow an existing symlink, so a changed prefix never
+  strands a work dir. Knobs: `tmp_teardown_globs` (move only
   matching files back), `tmp_skip_teardown` (leave results in tmp even on success). Teardown can also be forced out
   of band via `Stage.teardown_tmp_work_dir(s, all_files=...)` / `Pipeline.teardown()` / the CLI's `teardown`: it decides
   purely from the on-disk symlink (not from `tmp_work_root`), is a no-op on a work dir that is not symlinked, and

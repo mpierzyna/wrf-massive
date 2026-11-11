@@ -86,9 +86,9 @@ class Stage(pydantic.BaseModel, abc.ABC):
     resources: Resources | None = None  # resources required by this stage
 
     # Run this stage's work dir on fast temporary storage (ramdisk, node-local or shared scratch).
-    # The work dir is moved to `<tmp_work_root>/<sim.name>/<work_dir>` and the original path becomes
-    # a symlink to it, so stage implementations need no changes at all: `get_work_dir()` keeps
-    # returning the same path and the filesystem does the redirection. See `Stage.tmp_work_dir`.
+    # The work dir is moved to `<tmp_work_root>/<workspace>/<sim.name>/<work_dir>` (see `tmp_dir.tmp_sim_dir`) and
+    # the original path becomes a symlink to it, so stage implementations need no changes at all: `get_work_dir()`
+    # keeps returning the same path and the filesystem does the redirection. See `Stage.tmp_work_dir`.
     tmp_work_root: TPathExists | None = None  # None disables the mechanism entirely
     tmp_teardown_globs: List[str] | None = None  # None moves the whole dir back, else only these globs
     tmp_skip_teardown: bool = False  # leave results in tmp even on success (debugging, shared scratch)
@@ -131,7 +131,7 @@ class Stage(pydantic.BaseModel, abc.ABC):
     def _check_tmp_work_dir_allowed(self, s: Simulation) -> None:
         """Raise if this stage's work dir must never be relocated to temporary storage."""
         if self.work_dir.is_absolute():
-            # `tmp_root / s.name / <absolute>` collapses to the absolute path itself -> self-symlink
+            # `<tmp sim dir> / <absolute>` collapses to the absolute path itself -> self-symlink
             raise ValueError(
                 f"Stage '{self.name}' has an absolute work_dir ('{self.work_dir}'), "
                 "which cannot be run in a tmp work dir."

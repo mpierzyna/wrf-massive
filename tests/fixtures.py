@@ -87,3 +87,8 @@ class StageReadsOther(Stage):
 @pytest.fixture()
 def simple_simulation(tmp_path) -> Simulation:
     return Simulation(sim_dir=tmp_path, settings={}, warmup_h=12, begin="2025-01-01", end="2025-01-02")
+
+
+def tmp_sim_dir(tmp_root: pathlib.Path, s: Simulation) -> pathlib.Path:
+    """Where a simulation's work dirs go on tmp storage: `<tmp_root>/<parent of sim_dir>/<sim>`."""
+    return tmp_root / s.sim_dir.parent.name / s.name
