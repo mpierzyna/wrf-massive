@@ -345,9 +345,9 @@ def teardown(state: CliState, stages: str | None, all_files: bool, sim_dirs: Tup
 def submit(state: CliState, stages: str | None, jobfile: str, dep_job: int | None, sim_dirs: Tuple[str, ...]):
     """Submit stages of simulations in SIM_DIRS to SLURM, one job per stage.
 
-    Stages of a simulation depend on each other. `--dep-job` can be used to chain an array submission (e.g., WPS
-    with execution limit) to the submission of the remaining pipeline (this command). The job script is called with
-    the stage name and simulation dir as arguments and should run `wrf-massive run --stages=$1 $2`.
+    Stages of a simulation depend on each other; `--dep-job` additionally makes the first stage of every simulation
+    wait for another job. The job script is called with the stage name and simulation dir as arguments and should run
+    `wrf-massive run --stages=$1 $2`.
     """
     sim_dirs = _require_sim_dirs(sim_dirs)
     jobfile = _abspath(jobfile)
