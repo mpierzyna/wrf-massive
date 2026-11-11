@@ -7,11 +7,14 @@ import datetime
 import os
 import pathlib
 import shutil
-from typing import Dict
+from typing import Dict, Self
+
+import pydantic
 
 from wrf_massive.base import Stage, Simulation, TPathExists, TPath
 from wrf_massive.log import get_logger
 from wrf_massive.stages.utils import load_wps_wrf_namelist_tmpl, run_cmd_logged, get_namelist_value
+from wrf_massive.stages.wrf.utils import estimate_ncpus_from_namelist
 
 logger = get_logger("stages.wrf")
 STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
@@ -58,6 +61,35 @@ class WRFStage(Stage):
     wrf_tmpl_dir: TPathExists  # compiled WRF
     namelist_tmpl_path: TPathExists
     myoutfields_path: TPathExists | None
+
+    # Re-validate on assignment, so resources set after construction (e.g. by StageArray) are checked as well.
+    model_config = pydantic.ConfigDict(validate_assignment=True)
+
+    @pydantic.model_validator(mode="after")
+    def _check_n_tasks(self) -> Self:
+        """Compare the number of MPI tasks with the range recommended for the domain size in the namelist."""
+        if self.resources is None:
+            return self
+
+        n_tasks = self.resources.n_tasks
+        name = pathlib.Path(self.namelist_tmpl_path).name
+        try:
+            n_min, n_max = estimate_ncpus_from_namelist(self.namelist_tmpl_path)
+        except (KeyError, ValueError) as e:  # e.g. e_we/e_sn missing or set via template placeholders
+            logger.warning(f"WRF: could not estimate the recommended number of MPI tasks from {name}: {e}")
+            return self
+
+        bracket = f"the recommended range of {n_min}-{n_max} tasks for the domain in {name}"
+        if n_tasks < n_min:
+            logger.warning(f"WRF: {n_tasks} MPI tasks are below {bracket}. WRF may run slowly.")
+        elif n_tasks > n_max:
+            logger.warning(
+                f"WRF: {n_tasks} MPI tasks are above {bracket}. The patches per task get very small, which can slow "
+                f"WRF down or make it fail."
+            )
+        else:
+            logger.info(f"WRF: {n_tasks} MPI tasks are within {bracket}.")
+        return self
 
     def setup(self, s: Simulation):
         work_dir = self.get_work_dir(s)

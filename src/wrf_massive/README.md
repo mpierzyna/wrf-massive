@@ -112,6 +112,9 @@ in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set
   SLURM decides how many tasks go on each node (it fills nodes one after the other), so the split is only even if
   the tasks exactly fill the nodes, e.g. 2 × 128 on nodes with 128 cores.
   Only MPI programs (WRF, WPS) can make use of several nodes; Python stages such as postprocessing run on one.
+- For `WRFStage`, `n_tasks` is checked against the range recommended for the domain size in the namelist
+  (`e_we`/`e_sn`, following the [WRF forum](https://forum.mmm.ucar.edu/threads/choosing-an-appropriate-number-of-processors.5082/)):
+  the range is logged as info, and a warning is logged if `n_tasks` is below or above it.
 - `cpus_total` is a convenience property computed as `n_tasks * cpus_per_task`.
 - `max_concurrent` (optional `int`) — limits how many jobs for this stage are allowed to run at the
   same time. Unset by default (no limit). See "Submitting to SLURM" below for when to use it.

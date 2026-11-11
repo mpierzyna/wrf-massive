@@ -171,7 +171,11 @@ postproc).
    `run_wps.sh` runs `geogrid.exe` once, `ungrib.exe` once per forcing source (linking `CERRA*.grb`/`ERA5*.grb` from
    `forcing_dir` via `link_grib.csh`, swapping in the right `Vtable`/`namelist.wps`), and finally `metgrid.exe`
    (`fg_name = 'ERA5','CERRA'`) to produce `met_em*` files.
-3. **`wrf`** (`stages/wrf/wrf.py`) — renders `namelist.input`, links `met_em*` output, runs WRF.
+3. **`wrf`** (`stages/wrf/wrf.py`) — renders `namelist.input`, links `met_em*` output, runs WRF. A model validator
+   compares `resources.n_tasks` with `stages/wrf/utils.py::estimate_ncpus_from_namelist` (UCAR forum rule
+   e_we/100·e_sn/100 … e_we/25·e_sn/25; nests: max of the lower, min of the upper limits) and logs info/warning,
+   never raises. `validate_assignment=True` makes it re-run when resources are assigned later (StageArray,
+   `stage.resources = ...` after a deepcopy).
 4. **`postproc`** (`stages/postproc/`) — post-processes WRF output (e.g. `cn2.py`).
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
