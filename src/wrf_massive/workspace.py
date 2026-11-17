@@ -52,6 +52,21 @@ def _abspath(path: str | pathlib.Path) -> pathlib.Path:
     return pathlib.Path(os.path.abspath(path))
 
 
+def import_module(path: str | pathlib.Path, name: str | None = None) -> ModuleType:
+    """Import a Python file (e.g. of a workspace) as module `name` (default: file name without suffix)."""
+    path = _abspath(path)
+    name = name or path.stem
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # register first, so the module can be imported by other workspace modules
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
+
+
 def find_env_file(start: str | pathlib.Path | None = None) -> pathlib.Path:
     """Locate `env.yaml` in `start` (default: current dir) or the closest of its parents."""
     start = _abspath(start if start is not None else pathlib.Path.cwd())
@@ -132,20 +147,6 @@ class Workspace:
             f"submitted with {submitted_hash[:12]}). Restore it or resubmit the job."
         )
 
-    def import_module(self, path: str | pathlib.Path, name: str | None = None) -> ModuleType:
-        """Import a Python file of this workspace as module `name` (default: file name without suffix)."""
-        path = _abspath(path)
-        name = name or path.stem
-        spec = importlib.util.spec_from_file_location(name, path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module  # register first, so the module can be imported by other workspace modules
-        try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            del sys.modules[name]
-            raise
-        return module
-
     @property
     def job_file(self) -> pathlib.Path | None:
         """SLURM job script of the env file's `job_file` key (relative to the root), or None if not set."""
@@ -173,7 +174,7 @@ class Workspace:
 
         self.activate()
         try:
-            module = self.import_module(module_path, name=PIPELINE_MODULE)
+            module = import_module(module_path, name=PIPELINE_MODULE)
         except Exception as e:
             logger.debug(f"Failed to import {module_path}.", exc_info=True)
             raise WorkspaceError(

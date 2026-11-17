@@ -35,10 +35,13 @@ use case).
 src/wrf_massive/        # generic, project-agnostic orchestration package
   base.py                # Stage / Simulation / Pipeline / Resources core abstractions
   config.py              # BaseYAMLConfig: pydantic <-> yaml (de)serialization helpers
-  cli.py                  # `wrf-massive` click group `main` (init/init-sims/run/teardown/submit, plot group); console script
-  workspace.py            # env file discovery, Workspace (root, env, lazy pipeline), load_env(), init_workspace()
+  cli.py                  # `wrf-massive` click group `main` (init/init-sims/run/teardown/submit, plot group); console script.
+                          #   init-sims and `plot sim-timeline -m` share _load_sims_from_module
+  workspace.py            # env file discovery, Workspace (root, env, lazy pipeline), load_env(), init_workspace(),
+                          #   import_module() (workspace-independent, also used by the plot group)
   log.py                  # logging helpers
-  plotting.py             # plot_domain_geo_em (geo_em terrain), plot_domain_nml (runs third_party/plot_domains.py)
+  plotting.py             # plot_domain_geo_em (geo_em terrain), plot_domain_nml (runs third_party/plot_domains.py),
+                          #   plot_sim_timeline (usable sim windows on a timeline)
   third_party/plot_domains.py  # unchanged copy of WPS v4.7.0 util/plot_domains.py + copyright info (Anthony Islas 2025, MIT)
   tmp_dir.py              # move a stage's work dir to a fast tmp location (e.g. ramdisk) and back
   stages/

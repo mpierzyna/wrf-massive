@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Small plotting helpers for WRF/WPS artifacts."""
+"""Small plotting helpers for WRF/WPS artifacts and simulation sets."""
 
 from __future__ import annotations
 
+import datetime
 import pathlib
 from typing import TYPE_CHECKING, Sequence, Tuple
 
@@ -13,6 +14,8 @@ import xarray as xr
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
+
+    from wrf_massive.base import Simulation
 
 
 def plot_domain_geo_em(
@@ -105,3 +108,61 @@ def plot_domain_nml(namelist: str | pathlib.Path | None, args: Sequence[str] = (
         runpy.run_module("wrf_massive.third_party.plot_domains", run_name="__main__")
     finally:
         sys.argv = argv
+
+
+def plot_sim_timeline(
+    sims: Sequence["Simulation"],
+    start: datetime.datetime | None = None,
+    end: datetime.datetime | None = None,
+    title: str | None = None,
+    ax: "Axes | None" = None,
+    figsize: Tuple[float, float] = (10, 1.5),
+    savefig: str | pathlib.Path | None = None,
+) -> "Axes":
+    """Plot which part of a period is covered by simulations.
+
+    The period `[start, end]` is drawn light grey, the usable window `[begin, end]` of each simulation (warm-up
+    excluded) orange on top of it.
+
+    Parameters
+    ----------
+    sims : simulations to draw.
+    start, end : bounds of the timeline. Default: earliest `begin` and latest `end` of `sims`. Windows outside the
+        bounds are cut off.
+    title : axes title; no title if ``None``.
+    ax : existing axes to draw on; a new figure/axes is created if ``None``.
+    figsize : figure size when creating a new axes.
+    savefig : if given, save the figure to this path (tight bbox).
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes drawn on; the figure is available as ``ax.figure``.
+    """
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
+    if not sims:
+        raise ValueError("No simulations to plot.")
+    start = start if start is not None else min(s.begin for s in sims)
+    end = end if end is not None else max(s.end for s in sims)
+    if start >= end:
+        raise ValueError(f"Timeline start {start} must be before its end {end}.")
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=figsize)
+    ax.axvspan(start, end, color="lightgrey", linewidth=0)
+    for s in sims:
+        ax.axvspan(s.begin, s.end, color="C1", linewidth=0)
+    ax.set_xlim(start, end)
+    ax.set_yticks([])
+    locator = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    if title is not None:
+        ax.set_title(title)
+
+    if savefig is not None:
+        ax.figure.savefig(savefig, bbox_inches="tight", dpi=150)
+
+    return ax

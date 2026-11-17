@@ -24,7 +24,8 @@ Key files:
 - `wrf_massive/cli.py`, `wrf_massive/workspace.py` — the `wrf-massive` command and workspace handling, see
   [Workspaces](#workspaces).
 - `wrf_massive/templates/workspace/` — the files `wrf-massive init` copies into a new workspace.
-- `wrf_massive/plotting.py`, `wrf_massive/third_party/` — domain plots, see [Plotting domains](#plotting-domains).
+- `wrf_massive/plotting.py`, `wrf_massive/third_party/` — domain and simulation timeline plots, see
+  [Plotting domains](#plotting-domains) and [Plotting simulation timelines](#plotting-simulation-timelines).
 - `wrf_massive/log.py`, `wrf_massive/config.py`, `wrf_massive/tmp_dir.py` — logging, YAML (de)serialisation and the
   temporary-storage mechanism.
 
@@ -295,6 +296,23 @@ wrf-massive plot domain-geo-em 2_wps/geo_em.d01.nc        # terrain of the geogr
 from WPS v4.7.0 by Anthony Islas (2025), included unchanged in `wrf_massive/third_party/`, except for the added
 copyright information. It saves the plot to `--save_file` (default `domains.png`) when no interactive display is
 available, and opens a window otherwise. `domain-geo-em` saves the plot next to the file as `<name>_domains.png`.
+
+### Plotting simulation timelines
+`wrf-massive plot sim-timeline` shows which part of a period a set of simulations covers: the usable window of each
+simulation (`begin` to `end`, warm-up excluded) is drawn orange on a light-grey timeline. It works without a workspace
+and takes the simulations either from their dirs or, with `-m`, from variables of a simulations module like
+`init-sims` does:
+
+```bash
+wrf-massive plot sim-timeline sim_2017-*                       # simulation dirs created by init-sims
+wrf-massive plot sim-timeline -m simulations.py sims_1y        # variable(s) holding a simulation or list of them
+wrf-massive plot sim-timeline -m simulations.py sims_1y --start 2017-01-01 --end 2021-01-01
+```
+
+The timeline spans the earliest `begin` to the latest `end` unless `--start`/`--end` are given. The title shows the
+module and variables (or the first and last dir), the number of simulations and their total usable days. The plot is
+saved in the current dir as `timeline_<module>_<variables>.png` (e.g. `timeline_simulations_sims_1y.png`) or
+`timeline_<first dir>...<last dir>.png`. From Python, use `wrf_massive.plotting.plot_sim_timeline(sims)`.
 
 ## Implementing a new Stage
 

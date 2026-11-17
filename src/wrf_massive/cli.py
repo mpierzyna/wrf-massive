@@ -30,6 +30,7 @@ from wrf_massive.workspace import (
     INIT_ENV_FILE,
     Workspace,
     WorkspaceError,
+    import_module,
     init_workspace,
 )
 
@@ -113,6 +114,25 @@ def _require_sim_dirs(sim_dirs: Tuple[str, ...]) -> List[pathlib.Path]:
     if not sim_dirs:
         raise click.UsageError("At least one simulation directory must be provided.")
     return [_abspath(d) for d in sim_dirs]
+
+
+def _load_sims_from_module(sim_module_path: pathlib.Path, sim_names: Tuple[str, ...]) -> List[Simulation]:
+    """Simulations of the variables `sim_names` in module `sim_module_path`, each holding a simulation or a list."""
+    module = import_module(sim_module_path)
+    click.echo(f"Loaded module {module.__name__} from '{sim_module_path}'.")
+    sims = []
+    for sim_name in sim_names:
+        try:
+            value = getattr(module, sim_name)
+        except AttributeError:
+            raise click.UsageError(f"Variable '{sim_name}' not found in '{sim_module_path}'.") from None
+        if not isinstance(value, list):
+            value = [value]
+        if not all(isinstance(s, Simulation) for s in value):
+            raise click.UsageError(f"Variable '{sim_name}' must hold a Simulation or a list of Simulations.")
+        click.echo(f"Found {len(value)} simulation(s) in variable '{sim_name}'.")
+        sims.extend(value)
+    return sims
 
 
 def _submit_stage_slurm(
@@ -253,17 +273,7 @@ def init_sims(state: CliState, root: str | None, sim_module: str, sim_name: str)
 
     ws = state.workspace
     root_path = root_path or ws.root
-    module = ws.import_module(sim_module_path)
-    click.echo(f"Loaded module {module.__name__} from '{sim_module_path}'.")
-
-    # Select simulations
-    try:
-        sims = getattr(module, sim_name)
-    except AttributeError:
-        raise click.UsageError(f"Variable '{sim_name}' not found in '{sim_module_path}'.") from None
-    if not isinstance(sims, list):
-        sims = [sims]
-    click.echo(f"Found {len(sims)} simulation(s) in variable '{sim_name}'.")
+    sims = _load_sims_from_module(sim_module_path, (sim_name,))
 
     # Init simulations
     for s in sims:
@@ -400,7 +410,7 @@ def submit(state: CliState, stages: str | None, jobfile: str | None, dep_job: in
 
 @main.group()
 def plot():
-    """Plot WPS domains. Works without a workspace."""
+    """Plot WPS domains and simulation timelines. Works without a workspace."""
 
 
 @plot.command()
@@ -459,6 +469,68 @@ def domain_nml(args: Tuple[str, ...]):
     if not pathlib.Path(namelist).is_file():
         raise click.UsageError(f"NAMELIST '{namelist}' is not a file. It must be the first argument.")
     plot_domain_nml(namelist, options)
+
+
+@plot.command()
+@click.option(
+    "-m",
+    "--module",
+    "sim_module",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Read TARGETS as variable names in this module (like `init-sims`) instead of simulation dirs.",
+)
+@click.option("--start", type=click.DateTime(), default=None, help="Timeline start. Default: earliest sim begin.")
+@click.option("--end", type=click.DateTime(), default=None, help="Timeline end. Default: latest sim end.")
+@click.argument("targets", nargs=-1)
+def sim_timeline(
+    sim_module: str | None,
+    start: datetime.datetime | None,
+    end: datetime.datetime | None,
+    targets: Tuple[str, ...],
+):
+    """Plot the periods covered by simulations (warm-up excluded) on a timeline.
+
+    TARGETS are simulation dirs (as created by `init-sims`). With `-m SIM_MODULE`, TARGETS are instead names of
+    variables in SIM_MODULE, each holding a simulation or list of simulations. The title names the module and
+    variables, or the alphabetically first and last simulation dir, plus the number of simulations and their total
+    usable days. The plot is saved in the current dir as `timeline_<module stem>_<variables>.png` or
+    `timeline_<first dir>...<last dir>.png`.
+    """
+    from wrf_massive.plotting import plot_sim_timeline  # imported lazily: plotting pulls in xarray/matplotlib
+
+    if not targets:
+        what = "variable name" if sim_module is not None else "simulation directory"
+        raise click.UsageError(f"At least one {what} must be provided.")
+
+    if sim_module is not None:
+        sim_module_path = _abspath(sim_module)
+        sims = _load_sims_from_module(sim_module_path, targets)
+        label = f"{sim_module_path.name}: {', '.join(targets)}"
+        out_name = f"timeline_{sim_module_path.stem}_{'_'.join(targets)}.png"
+    else:
+        sims = []
+        for sim_dir in targets:
+            if not (pathlib.Path(sim_dir) / "simulation.yaml").is_file():
+                raise click.UsageError(f"'{sim_dir}' is not a simulation dir (no simulation.yaml).")
+            sims.append(Simulation.from_disk(sim_dir))
+        click.echo(f"Loaded {len(sims)} simulation(s).")
+        names = sorted(_abspath(t).name for t in targets)
+        label = names[0] if len(names) == 1 else f"{names[0]}...{names[-1]}"
+        out_name = f"timeline_{label.replace(' ', '_')}.png"
+
+    days_total = sum((s.end - s.begin for s in sims), datetime.timedelta()) / datetime.timedelta(days=1)
+    try:
+        plot_sim_timeline(
+            sims,
+            start=start,
+            end=end,
+            title=f"{label} (n={len(sims)} sims, {days_total:g} days)",
+            savefig=out_name,
+        )
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    click.echo(f"-> Saved simulation timeline to {out_name}")
 
 
 if __name__ == "__main__":
