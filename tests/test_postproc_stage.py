@@ -3,21 +3,28 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import datetime
+import pathlib
+import re
 import warnings
 
+import netCDF4
 import numpy as np
 import pydantic
 import pytest
 import xarray as xr
-from fixtures import WRFOUT_DIR, simple_simulation
+from fixtures import WRFOUT_DIR, WRFOUT_DIRS, simple_simulation
 
 pytest.importorskip("wrf", reason="wrf-python is not installed (`postproc` extra)")
 
 
 from wrf_massive.base import Resources, Simulation
-from wrf_massive.stages.postproc import PostProcStage
-from wrf_massive.stages.postproc.base import TVarList, load_wrfout
+from wrf_massive.stages.postproc import PostProcFn, PostProcStage
+from wrf_massive.stages.postproc.base import TVarList
 from wrf_massive.stages.postproc.cn2 import Cn2PostProcStage, fn_ct2_cn2
+from wrf_massive.stages.postproc.iofields import parse_myoutfields
+from wrf_massive.stages.postproc.precip import fn_int_water_paths
+from wrf_massive.stages.postproc.variables import DERIVED_VARS, REQUIRED_WRF_FIELDS, var_name, wrf_fields_of
+from wrf_massive.stages.postproc.wrfout import load_wrfout
 
 
 def _make_warmup_stage(tmp_path, begin: str, first_file: str, n_files: int = 6, freq_h: int = 6) -> tuple:
@@ -100,9 +107,9 @@ def test_w(simple_simulation: Simulation, tmp_path, run_parallel):
         resources=Resources(n_tasks=2, cpus_per_task=1, mem_per_cpu="1G"),
     )
 
-    # Check that w gets moved to postproc functions
-    assert "w" not in pp.extract_vars
-    assert "w" in pp.postproc_fns[0].returns
+    # w is a wrf-python derived variable (`wa`), read from the file without any postproc fn
+    assert pp.postproc_fns == []
+    assert "w" in pp.vars_to_read()
 
     # Run stage
     pp.run(simple_simulation)
@@ -126,11 +133,8 @@ def test_uv(simple_simulation: Simulation, tmp_path, run_parallel):
         resources=Resources(n_tasks=2, cpus_per_task=1, mem_per_cpu="1G"),
     )
 
-    # Check that u_met and v_met get moved to postproc functions
-    assert ("u_met" not in pp.extract_vars) and ("v_met" not in pp.extract_vars)
-    assert "uvmet" in pp.postproc_fns[0].requires
-    assert "u_met" in pp.postproc_fns[0].returns
-    assert "v_met" in pp.postproc_fns[0].returns
+    # u_met and v_met are the components of the wrf-python derived variable `uvmet`
+    assert {"u_met", "v_met"} <= {str(v) for v in pp.vars_to_read()}
 
     # Run stage
     pp.run(simple_simulation)
@@ -166,25 +170,88 @@ def test_cn2(simple_simulation: Simulation, tmp_path, run_parallel):
     assert "ct2" in ds.data_vars
 
 
-def _make_cn2_stage(tmp_path, **kwargs) -> tuple:
-    """Cn2 stage over the test wrfout fixture, plus a matching simulation."""
-    s = Simulation(
-        sim_dir=WRFOUT_DIR.parent, settings={}, warmup_h=12, begin="2017-01-02T12:00:00", end="2017-01-03"
+# --- Helpers over the wrfout fixtures -------------------------------------------------------------------------------
+# The fixtures differ in which fields WRF wrote (see fixtures.py). Tests take what they need from the fixtures'
+# contents instead of naming a particular setup, so they hold for any WRF output configuration.
+
+_STAGE_KWARGS = dict(work_dir="/tmp", wrfout_dir="x", domain=1, compression=False)
+
+
+def _first_file(fixture_dir: pathlib.Path = WRFOUT_DIR) -> pathlib.Path:
+    return sorted(fixture_dir.glob("wrfout_aux_d01_*"))[0]
+
+
+def _fixture_fields(fixture_dir: pathlib.Path = WRFOUT_DIR) -> list:
+    """WRF fields in a wrfout fixture (what the WRF run behind it wrote to its aux stream)."""
+    with netCDF4.Dataset(_first_file(fixture_dir)) as f:
+        return [v for v in f.variables if v != "Times"]
+
+
+def _fixtures_with(fields) -> list:
+    """Fixture dirs whose files contain all of `fields`."""
+    return [d for d in WRFOUT_DIRS if set(fields) <= set(_fixture_fields(d))]
+
+
+def _readable_vars(fixture_dir: pathlib.Path) -> TVarList:
+    """Everything a fixture provides: the WRF fields and derived variables it has all needed fields for.
+
+    EL_PBL is requested destaggered, as `fn_ct2_cn2` needs it. The horizontally staggered U/V are left out: wrf-python
+    reads them raw only with their own coordinates (XLAT_U/XLONG_U, XLAT_V/XLONG_V), which wrfout_aux files lack.
+    Their earth-relative versions `u_met`/`v_met` are included as derived variables.
+    """
+    fields = set(_fixture_fields(fixture_dir)) - {"U", "V"}
+    names = [*sorted(fields), *DERIVED_VARS]
+    readable = [n for n in names if set(wrf_fields_of(n)) <= set(_fixture_fields(fixture_dir))]
+    return [("EL_PBL", "bottom_top_stag") if n == "EL_PBL" else n for n in readable]
+
+
+def _write_myoutfields(tmp_path, fields, stream: int = 7) -> pathlib.Path:
+    path = tmp_path / "myoutfields.txt"
+    path.write_text(f"+:h:{stream}:{','.join(fields)}\n")
+    return path
+
+
+def _copy_fixture(dst_path: pathlib.Path, fields, src_path: pathlib.Path, rename=None) -> pathlib.Path:
+    """Copy of a wrfout fixture file with only `Times` and `fields` (optionally renamed, `{old: new}`)."""
+    rename = rename or {}
+    with netCDF4.Dataset(src_path) as src, netCDF4.Dataset(dst_path, "w") as dst:
+        dst.setncatts({a: src.getncattr(a) for a in src.ncattrs()})
+        for dim_name, dim in src.dimensions.items():
+            dst.createDimension(dim_name, None if dim.isunlimited() else len(dim))
+        for v in {"Times", *fields}:
+            out = dst.createVariable(rename.get(v, v), src[v].dtype, src[v].dimensions)
+            out.setncatts({a: src[v].getncattr(a) for a in src[v].ncattrs()})
+            out[:] = src[v][:]
+    return dst_path
+
+
+def _simulation(fixture_dir: pathlib.Path) -> Simulation:
+    """Simulation over a fixture dir, beginning with its first file (so no file counts as warmup)."""
+    begin = datetime.datetime.strptime(_first_file(fixture_dir).name[15:34], "%Y-%m-%d_%H:%M:%S")
+    return Simulation(
+        sim_dir=fixture_dir.parent, settings={}, warmup_h=12, begin=begin, end=begin + datetime.timedelta(days=1)
     )
+
+
+def _make_cn2_stage(tmp_path, fixture_dir: pathlib.Path = WRFOUT_DIR, **kwargs) -> tuple:
+    """Cn2 stage over a wrfout fixture, plus a matching simulation."""
     pp = Cn2PostProcStage(
         work_dir=tmp_path,
-        wrfout_dir=WRFOUT_DIR.name,
+        wrfout_dir=fixture_dir.name,
         domain=1,
         compression=False,  # for testing
         resources=Resources(n_tasks=1, cpus_per_task=1, mem_per_cpu="1G"),
         **kwargs,
     )
-    return pp, s
+    return pp, _simulation(fixture_dir)
+
+
+# --- Reading and writing -------------------------------------------------------------------------------------------
 
 
 def test_fill_values_normalized():
     """wrf-python stamps _FillValue/missing_value on some vars, which must not survive into the dataset."""
-    ds = load_wrfout(sorted(WRFOUT_DIR.glob("wrfout_aux_d01_*"))[0], ["p", "tk", "PH"])
+    ds = load_wrfout(_first_file(), ["p", "tk", "PH"])
     for v in ds.variables:
         assert "_FillValue" not in ds[v].attrs, f"{v} still carries _FillValue"
         assert "missing_value" not in ds[v].attrs, f"{v} still carries missing_value"
@@ -192,7 +259,7 @@ def test_fill_values_normalized():
 
 def test_written_file_reads_without_warning(tmp_path):
     """Conflicting fill values used to raise a SerializationWarning on every read of the output."""
-    pp, s = _make_cn2_stage(tmp_path)
+    pp, s = _make_cn2_stage(tmp_path, extract_vars=["p", "tk", "slp"])
     pp.run(s)
 
     f_out = sorted(tmp_path.glob(f"*{pp.file_suffix}.nc"))[0]
@@ -207,7 +274,7 @@ def test_written_file_reads_without_warning(tmp_path):
 @pytest.mark.parametrize("single_precision", [True, False])
 def test_single_precision(tmp_path, single_precision):
     """wrf-python returns z/w/u_met/v_met/slp as float64; they should be stored as float32 by default."""
-    pp, s = _make_cn2_stage(tmp_path, single_precision=single_precision)
+    pp, s = _make_cn2_stage(tmp_path, extract_vars=["w", "u_met", "slp"], single_precision=single_precision)
     pp.run(s)
 
     ds = xr.open_dataset(sorted(tmp_path.glob(f"*{pp.file_suffix}.nc"))[0])
@@ -222,6 +289,30 @@ def test_single_precision(tmp_path, single_precision):
     cn2 = ds["cn2"].values
     assert np.all(np.isfinite(cn2))
     assert cn2.max() > 0
+
+
+def test_wrf_fields_read_case_insensitively(tmp_path):
+    """WRF writes upper-case names, but a lower-case field in the file is still found by its ALL-CAPS name."""
+    path = _copy_fixture(tmp_path / "lower.nc", [*REQUIRED_WRF_FIELDS, "TSQ"], _first_file(), rename={"TSQ": "tsq"})
+    assert "TSQ" in load_wrfout(path, ["TSQ"]).data_vars
+
+
+@pytest.mark.parametrize("name", list(DERIVED_VARS))
+def test_derived_requires_are_sufficient(tmp_path, name):
+    """Every derived variable can be read from a wrfout file holding only its declared WRF fields.
+
+    Guards the hand-written `requires` in `DERIVED_VARS` against mistakes and against changes in wrf-python. Each entry
+    is checked against the first fixture that has all its fields; an entry no fixture can verify fails.
+    """
+    fields = [*REQUIRED_WRF_FIELDS, *DERIVED_VARS[name].requires]
+    fixtures = _fixtures_with(fields)
+    assert fixtures, f"No test fixture has all of {fields}, so '{name}' cannot be verified."
+
+    path = _copy_fixture(tmp_path / f"{name}.nc", fields, _first_file(fixtures[0]))
+    assert name in load_wrfout(path, [name]).data_vars
+
+
+# --- Stage configuration -------------------------------------------------------------------------------------------
 
 
 def test_parallel_requires_resources(tmp_path):
@@ -249,7 +340,7 @@ def test_failure_names_input_file(tmp_path, run_parallel):
     with pytest.raises(RuntimeError) as excinfo:
         pp.run(s)
 
-    assert "wrfout_aux_d01_2017-01-02_12:00:00.nc" in str(excinfo.value) + str(excinfo.value.__cause__)
+    assert _first_file().name in str(excinfo.value) + str(excinfo.value.__cause__)
 
 
 def test_defaults_applied_to_subclass_class_defaults():
@@ -266,4 +357,178 @@ def test_defaults_applied_to_subclass_class_defaults():
     pp = PostProcStage(work_dir="/tmp", wrfout_dir="x", domain=1, compression=False, extract_vars=["u_met"])
     for v in ["z", "HGT", "p"]:
         assert v in pp.extract_vars
-    assert any(set(fn.returns) == {"u_met", "v_met"} for fn in pp.postproc_fns)
+    assert "v_met" in pp.extract_vars
+
+
+def test_postproc_fn_inputs_read_without_extract_vars():
+    """Everything a postproc fn requires is read from the file; it comes and goes with the postproc fns."""
+    to_read = [var_name(v) for v in Cn2PostProcStage(**_STAGE_KWARGS).vars_to_read()]
+    assert {"TSQ", "EL_PBL", "p", "tk"} <= set(to_read)  # what fn_ct2_cn2 requires
+
+    to_read = [var_name(v) for v in Cn2PostProcStage(**_STAGE_KWARGS, postproc_fns=[]).vars_to_read()]
+    assert "tk" not in to_read and "TSQ" not in to_read
+
+
+def test_unknown_derived_variable_fails():
+    with pytest.raises(pydantic.ValidationError, match="Unknown derived variable 'not_a_derived_var'"):
+        PostProcStage(**_STAGE_KWARGS, extract_vars=["not_a_derived_var"])
+
+
+def test_variable_read_two_ways_fails():
+    """A field stored as it is but required destaggered (or vice versa) cannot be read both ways."""
+    with pytest.raises(pydantic.ValidationError, match="'EL_PBL' is needed both as"):
+        Cn2PostProcStage(**_STAGE_KWARGS, extract_vars=["EL_PBL"])
+    Cn2PostProcStage(**_STAGE_KWARGS, extract_vars=[("EL_PBL", "bottom_top_stag")])
+
+
+def test_postproc_fn_order():
+    """A postproc fn sees what earlier fns return, but not what later ones return."""
+    fn_a = PostProcFn(fn=lambda ds: {"a": ds["tk"] * 2}, requires=["tk"], returns=["a"])
+    fn_b = PostProcFn(fn=lambda ds: {"b": ds["a"] + 1}, requires=["a"], returns=["b"])
+
+    pp = PostProcStage(**_STAGE_KWARGS, extract_vars=["b"], postproc_fns=[fn_a, fn_b])
+    assert "a" not in pp.vars_to_read() and "b" not in pp.vars_to_read()
+
+    with pytest.raises(pydantic.ValidationError, match="requires \\['a'\\], returned only by a later postproc fn"):
+        PostProcStage(**_STAGE_KWARGS, extract_vars=["b"], postproc_fns=[fn_b, fn_a])
+
+
+# --- Check against myoutfields.txt ---------------------------------------------------------------------------------
+
+
+def test_parse_myoutfields(tmp_path):
+    """Parsed like WRF: case-insensitive, per stream, `-` removes, `#` lines skipped, stops at first blank line."""
+    path = tmp_path / "myoutfields.txt"
+    path.write_text(
+        "+:h:7:U,v, qsq ,T\n"
+        "# +:h:7:COMMENTED\n"
+        "+:h:7:W # trailing comment hides the whole line, like in WRF\n"
+        "+:h:0:ONLY_MAIN_HISTORY\n"
+        "+:i:7:ONLY_INPUT\n"
+        "-:h:7:T\n"
+        "\n"
+        "+:h:7:AFTER_BLANK_LINE\n"
+    )
+    assert parse_myoutfields(path, stream=7) == {"U", "V", "QSQ"}
+    assert parse_myoutfields(path, stream=0) == {"ONLY_MAIN_HISTORY"}
+
+    path.write_text("U,V,T\n")
+    with pytest.raises(ValueError, match="line 1"):
+        parse_myoutfields(path, stream=7)
+
+
+@pytest.mark.parametrize("fixture_dir", WRFOUT_DIRS, ids=lambda d: d.name)
+def test_myoutfields_check_passes_for_what_wrf_wrote(tmp_path, fixture_dir):
+    """A stage reading everything a fixture provides passes the check against the fields the fixture holds."""
+    kwargs = dict(_STAGE_KWARGS, extract_vars=_readable_vars(fixture_dir))
+    Cn2PostProcStage(**kwargs, myoutfields_path=_write_myoutfields(tmp_path, _fixture_fields(fixture_dir)))
+
+    # Case-insensitive like WRF, so lower-case entries in myoutfields.txt count as well
+    lower = [f.lower() for f in _fixture_fields(fixture_dir)]
+    Cn2PostProcStage(**kwargs, myoutfields_path=_write_myoutfields(tmp_path, lower))
+
+    # The iofields file of the WRF run, if the fixture has it
+    if (fixture_dir / "myoutfields.txt").exists():
+        Cn2PostProcStage(**kwargs, myoutfields_path=fixture_dir / "myoutfields.txt")
+
+
+def test_myoutfields_check_names_missing_fields(tmp_path):
+    """A missing field fails at init, named with the derived variable that needs it (if any)."""
+    fields = [f for f in _fixture_fields() if f not in ("QVAPOR", "TSQ", "XLAT")]
+    path = _write_myoutfields(tmp_path, fields)
+
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        Cn2PostProcStage(**_STAGE_KWARGS, extract_vars=["rh"], myoutfields_path=path)
+    msg = str(excinfo.value)
+    assert "QVAPOR (for rh)" in msg  # needed by a derived variable only
+    assert re.search(r"\bTSQ\b(?! \()", msg)  # a WRF field read as it is (for fn_ct2_cn2), so nothing to add
+    assert "XLAT (for coordinates)" in msg  # needed by wrf-python for every variable
+
+
+def test_myoutfields_check_uses_configured_stream(tmp_path):
+    """Only the fields of `iofields_stream` count."""
+    path = _write_myoutfields(tmp_path, _fixture_fields(), stream=5)
+    with pytest.raises(pydantic.ValidationError, match="history stream 7"):
+        Cn2PostProcStage(**_STAGE_KWARGS, myoutfields_path=path)
+    Cn2PostProcStage(**_STAGE_KWARGS, myoutfields_path=path, iofields_stream=5)
+
+
+# --- Full runs -----------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("run_parallel", [False, True])
+@pytest.mark.parametrize("read_everything", [False, True], ids=["default", "everything"])
+@pytest.mark.parametrize("fixture_dir", WRFOUT_DIRS, ids=lambda d: d.name)
+def test_cn2_stage_fully_executed(tmp_path, fixture_dir, read_everything, run_parallel):
+    """The Cn2 stage, checked against what WRF wrote, runs through every input file and stores exactly its
+    `extract_vars` plus what its postproc fns return, complete and finite. Either with the defaults or reading
+    everything the fixture provides."""
+    extract_vars = _readable_vars(fixture_dir) if read_everything else []
+    pp, s = _make_cn2_stage(
+        tmp_path,
+        fixture_dir,
+        extract_vars=extract_vars,
+        myoutfields_path=_write_myoutfields(tmp_path, _fixture_fields(fixture_dir)),
+        run_parallel=run_parallel,
+    )
+    pp.setup(s)
+    assert pp.is_setup(s) and not pp.is_done(s)
+    pp.run(s)
+    assert pp.is_done(s)
+
+    outputs = sorted(tmp_path.glob(f"*{pp.file_suffix}.nc"))
+    inputs = pp.get_inputs(s)
+    assert len(outputs) == len(inputs) == 2
+
+    expected = {var_name(v) for v in pp.extract_vars} | {"ct2", "cn2"}
+    assert {"z", "HGT", "p"} <= expected  # always added by PostProcStage
+    for f_in, f_out in zip(inputs, outputs):
+        ds = xr.open_dataset(f_out)
+        stored = set(ds.data_vars) | set(ds.coords)  # requested XLAT/XLONG end up as the coordinates they are
+        extra = set(ds.data_vars) - expected
+        assert expected <= stored and not extra, f"missing {expected - stored}, extra {extra}"
+        with netCDF4.Dataset(f_in) as wrfin:
+            assert ds.sizes["time"] == len(wrfin.dimensions["Time"])  # all time steps of the input file
+        assert ds["cn2"].sizes["bottom_top"] == ds["p"].sizes["bottom_top"]  # on mass levels
+        not_finite = [v for v in ds.data_vars if not np.all(np.isfinite(ds[v].values))]
+        assert not not_finite, f"{f_out.name}: non-finite values in {not_finite}"
+
+
+def test_water_paths_and_reflectivity(tmp_path):
+    """mdbz and the water paths need rain and snow, so they run on a fixture with QRAIN/QSNOW."""
+    fixtures = _fixtures_with(["QRAIN", "QSNOW"])
+    assert fixtures, "No test fixture has QRAIN/QSNOW."
+    pp = PostProcStage(
+        work_dir=tmp_path,
+        wrfout_dir=fixtures[0].name,
+        domain=1,
+        extract_vars=["mdbz"],
+        postproc_fns=[fn_int_water_paths],
+        myoutfields_path=_write_myoutfields(tmp_path, _fixture_fields(fixtures[0])),
+        compression=False,
+    )
+    pp.run(_simulation(fixtures[0]))
+
+    ds = xr.open_mfdataset(sorted(tmp_path.glob(f"*{pp.file_suffix}.nc")))
+    assert set(ds.data_vars) == {"mdbz", "z", "HGT", "p", "rwp", "swp", "iwv"}
+    assert all(np.all(np.isfinite(ds[v].values)) for v in ds.data_vars)
+
+
+def test_postproc_fn_replaces_derived_variable(simple_simulation: Simulation, tmp_path):
+    """A postproc fn returning a derived variable's name replaces the wrf-python one; its WRF fields are read."""
+    my_p = PostProcFn(fn=lambda ds: {"p": (ds["P"] + ds["PB"]) * 0 + 1}, requires=["P", "PB"], returns=["p"])
+    pp = PostProcStage(
+        work_dir=tmp_path,
+        wrfout_dir=WRFOUT_DIR,
+        domain=1,
+        extract_vars=["p"],
+        postproc_fns=[my_p],
+        compression=False,
+        discard_warmup=False,
+    )
+    assert "p" not in pp.vars_to_read()
+    pp.run(simple_simulation)
+
+    ds = xr.open_dataset(sorted(tmp_path.glob(f"*{pp.file_suffix}.nc"))[0])
+    assert np.all(ds["p"] == 1)
+    assert "P" not in ds.data_vars and "tk" not in ds.data_vars  # inputs of postproc fns are not stored

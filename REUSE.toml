@@ -6,9 +6,15 @@ SPDX-FileCopyrightText = "2024 Harish Baki"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = ["tests/wrfout/wrfout*.nc"]
+path = ["tests/wrfout/wrfout*.nc", "tests/wrfout_extended/wrfout*.nc"]
 SPDX-FileCopyrightText = "2026 Maximilian Pierzyna"
 SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# iofields file of the WRF run behind the wrfout_extended fixture (no room for a comment)
+[[annotations]]
+path = ["tests/wrfout_extended/myoutfields.txt"]
+SPDX-FileCopyrightText = "2026 Maximilian Pierzyna"
+SPDX-License-Identifier = "GPL-3.0-or-later"
 
 [[annotations]]
 path = [

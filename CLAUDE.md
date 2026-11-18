@@ -19,7 +19,7 @@ use case).
 - Package manager: `uv` (`uv sync` to install, `uv run <cmd>` to run anything in the managed env).
 - Python: `>=3.12`.
 - `wrf-python` needs a working `gfortran`/gcc toolchain to build. It is the optional `postproc` extra (only
-  `stages/postproc/base.py` imports `wrf`; that import raises a pointer to the extra if it's missing).
+  `stages/postproc/wrfout.py` imports `wrf`; that import raises a pointer to the extra if it's missing).
 - Users install wrf-massive from a GitHub tag (README "Installation"); `bump-my-version` updates those tags in
   README.md. The pip example also pins `wrf-python` to the tag in `[tool.uv.sources]` (pip ignores uv sources) —
   update it there by hand when that pin changes.
@@ -206,7 +206,26 @@ postproc).
    e_we/100·e_sn/100 … e_we/25·e_sn/25; nests: max of the lower, min of the upper limits) and logs info/warning,
    never raises. `validate_assignment=True` makes it re-run when resources are assigned later (StageArray,
    `stage.resources = ...` after a deepcopy).
-4. **`postproc`** (`stages/postproc/`) — post-processes WRF output (e.g. `cn2.py`).
+4. **`postproc`** (`stages/postproc/`) — post-processes WRF output (e.g. `cn2.py`). Modules: `base.py`
+   (`PostProcFn`, `PostProcStage`), `variables.py` (naming convention, `DERIVED_VARS` table), `wrfout.py`
+   (wrf-python reading: `read_var`, `load_wrfout`; the only module importing `wrf`), `iofields.py`
+   (`parse_myoutfields`). Naming: ALL-CAPS names are WRF fields, lower-case names derived variables. A wrf-python
+   derived variable (`DERIVED_VARS`: `wrf.getvar()` name, WRF fields it reads, optional component index for stacked
+   results like `uvmet`) is read from the file exactly like a WRF field, so it is not a postproc fn: `vars_to_read()`
+   = everything in `extract_vars` or any `requires` that no postproc fn returns (a postproc fn returning a derived
+   name replaces it). Overriding `postproc_fns` therefore never loses derived variables. `check_vars` at init:
+   (1) the WRF fields needed for `vars_to_read()` (plus `XLAT`/`XLONG`, which wrf-python needs for the coordinates of
+   every variable, raw fields included) must be in `parse_myoutfields(myoutfields_path, iofields_stream)` (skipped
+   with a warning if `myoutfields_path` is None; unknown derived names raise regardless), (2) each postproc fn may
+   only require what is read or returned by an earlier fn. `parse_myoutfields` mirrors WRF's `modify_io_masks`: `#`
+   anywhere comments out the line, reading stops at the first blank line, names are case-insensitive.
+   `test_derived_requires_are_sufficient` reads each `DERIVED_VARS` entry from a copy of the first fixture
+   (`tests/fixtures.py::WRFOUT_DIRS`: `wrfout` with QRAIN/QSNOW, `wrfout_extended` with PSFC/Q2, QSQ/COV and
+   WRF-Solar fields) that has all its `requires`, reduced to just those; an entry no fixture covers fails. Postproc
+   tests derive their expectations from the fixtures' contents and the stage config, never from a particular
+   project setup. `Cn2PostProcStage` stores only `ct2`/`cn2` (+ `z`/`HGT`/`p`); projects subclass it with their own
+   `extract_vars`. A name needed both raw and destaggered raises at
+   init (wrf-python's metadata decorators also need a template field, `P` for heights and 3D winds).
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
 `StageArray` runs several substages inside one job (one SLURM allocation). It overrides `tmp_work_dir` only:

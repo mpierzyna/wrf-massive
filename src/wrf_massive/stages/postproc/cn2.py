@@ -11,7 +11,6 @@ import xarray as xr
 
 from wrf_massive.stages.postproc import PostProcFn, PostProcStage
 from wrf_massive.stages.postproc.base import TVarList
-from wrf_massive.stages.postproc.precip import fn_int_water_paths
 
 
 def _get_ct2_hb15(*, var_theta, Lm):
@@ -70,39 +69,13 @@ fn_ct2_cn2 = PostProcFn(
 
 
 class Cn2PostProcStage(PostProcStage):
-    """Post-processing stage for typical CT2/Cn2 postprocessing."""
+    """Post-processing stage for CT2/Cn2.
 
-    extract_vars: TVarList = [
-        "z",
-        "HGT",
-        "p",
-        "u_met",
-        "v_met",
-        "w",
-        "th",  # potential temperature
-        # "tk",
-        "rh",
-        "PBLH",
-        "LANDMASK",
-        "mdbz",  # maximum reflectivity
-        "slp",
-        "T2",
-        # "TH2",
-        "U10",
-        "V10",
-        "LH",
-        "HFX",
-        "UST",
-        # "ZNT",
-        # "Z0",
-        "QKE",
-        ("EL_PBL", "bottom_top_stag"),
-        "TSQ",
-    ]
+    Stores `ct2`, `cn2` and the vertical coordinates `PostProcStage` always adds. The variables `fn_ct2_cn2` needs
+    (`TSQ`, `EL_PBL`, `p`, `tk`) are read from the wrfout file automatically. Subclass or pass `extract_vars` to store
+    more, e.g. the setup-specific selection of a project.
+    """
 
-    postproc_fns: List[PostProcFn] = [
-        fn_ct2_cn2,
-        fn_int_water_paths,
-    ]
-
+    extract_vars: TVarList = []
+    postproc_fns: List[PostProcFn] = [fn_ct2_cn2]
     file_suffix: str = "cn2"

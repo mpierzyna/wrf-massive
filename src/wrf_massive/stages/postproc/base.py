@@ -2,119 +2,31 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+"""Post-processing of wrfout files. See `variables.py` for how variables are named."""
+
 from __future__ import annotations
 
 import concurrent.futures
-import copy
 import datetime
 import os
 import pathlib
 import re
 import shutil
-from typing import Callable, Dict, List, Self, Tuple
+from typing import Callable, Dict, List, Self
 
-import netCDF4
 import numpy as np
 import pydantic
 import xarray as xr
 
-try:
-    import wrf
-except ImportError as e:
-    raise ImportError(
-        "The postprocessing stages need wrf-python, which is installed with the `postproc` extra of wrf-massive, "
-        'e.g. `uv add "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@<tag>"` '
-        "(see the installation instructions in the README)."
-    ) from e
-
-from wrf_massive.base import Simulation, Stage, TPath
+from wrf_massive.base import Simulation, Stage, TPath, TPathExists
 from wrf_massive.log import get_logger
+from wrf_massive.stages.postproc.iofields import parse_myoutfields
+from wrf_massive.stages.postproc.variables import REQUIRED_WRF_FIELDS, TVarList, var_name, wrf_fields_of
+from wrf_massive.stages.postproc.wrfout import load_wrfout
 
 logger = get_logger("stages.postproc")
 
 STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
-
-# Type alias for list of variable names to extract from wrfout files.
-# If tuple, first element is variable name, second element is dimension along which to destagger.
-TVarList = List[str | Tuple[str, str]]
-
-
-def normalize_fill_values(v_data: xr.DataArray) -> xr.DataArray:
-    """Replace declared fill/missing sentinels with NaN and drop the corresponding attributes.
-
-    wrf-python stamps `_FillValue`/`missing_value` (float64 1e20) onto some float32 variables (e.g. `p`).
-    xarray then warns about conflicting fill values on every read and silently decodes genuine 1e20 values
-    to NaN. Normalising here means the returned dataset is plain NaN-based and safe to write and re-read.
-    """
-    fill_values = [v_data.attrs.pop(k, None) for k in ("_FillValue", "missing_value")]
-    for k in ("_FillValue", "missing_value"):
-        v_data.encoding.pop(k, None)
-
-    if not np.issubdtype(v_data.dtype, np.floating):
-        # Non-float data cannot hold NaN, so only the attributes are dropped.
-        return v_data
-
-    # Replace sentinels in-place (avoids copying these potentially huge arrays and preserves dtype)
-    arr = v_data.values
-    for fill in fill_values:
-        if fill is None:
-            continue
-        try:
-            if not np.isfinite(fill):
-                continue  # NaN fill value: nothing to replace
-        except (TypeError, ValueError):
-            logger.warning(f"Ignoring non-numeric fill value '{fill}' of variable '{v_data.name}'.")
-            continue
-        arr[arr == fill] = np.nan
-
-    return v_data
-
-
-def load_wrfout(f: pathlib.Path | str, vars_to_extract: TVarList) -> xr.Dataset:
-    """Load wrfout file and extract variables using wrf-python."""
-    # wrf-python reads eagerly, so all extracted data stays valid once the file is closed again.
-    with netCDF4.Dataset(f) as wrf_file:
-        # Start actual extraction
-        res = {}
-        for v in vars_to_extract:
-            # Optionally: Extract dimension along which data will be destaggered
-            if isinstance(v, tuple):
-                v, destagger_dim = v
-            else:
-                destagger_dim = None
-
-            # Get variable for all timesteps (ATTENTION! This is heavy on memory!)
-            logger.info(f"Reading {v}... ")
-            v_data = wrf.getvar(wrf_file, v, timeidx=wrf.ALL_TIMES)
-
-            # Now destagger
-            if destagger_dim:
-                destagger_dim_ind = v_data.dims.index(destagger_dim)
-                logger.info(f"Destaggering along {destagger_dim} ({destagger_dim_ind})... ")
-                v_data = wrf.destagger(v_data, destagger_dim_ind, meta=True)
-
-            # Serialise object attributes for later netcdf storage
-            v_data.attrs["projection"] = v_data.attrs["projection"].proj4()
-            v_data = v_data.drop_vars("latlon_coord", errors="ignore")
-            v_data = normalize_fill_values(v_data)
-
-            # Store it. Maybe write to output file directly to release RAM
-            assert v not in res, f"Variable {v} already in results!"  # this shouldn't happen
-            res[v] = v_data
-            logger.info("Done!")
-
-        # Collect everything into a single dataset
-        res_ds = xr.Dataset(res)
-        res_ds = res_ds.drop_vars("latlon_coord", errors="ignore")
-
-        # Copy attributes from original file
-        for attr in wrf_file.ncattrs():
-            res_ds.attrs[attr] = wrf_file.getncattr(attr)
-
-    # Rename time
-    res_ds = res_ds.rename({"Time": "time"})
-
-    return res_ds
 
 
 class PostProcFn(pydantic.BaseModel):
@@ -129,44 +41,28 @@ class PostProcFn(pydantic.BaseModel):
         return self.fn(ds)
 
 
-def _w_rename_fn(ds: xr.Dataset) -> Dict[str, xr.DataArray]:
-    """Rename wa to w."""
-    return {"w": ds["wa"]}
-
-
-fn_w_rename = PostProcFn(
-    requires=["wa"],
-    returns=["w"],
-    fn=_w_rename_fn,
-)
-
-
-def _split_uvmet(ds: xr.Dataset) -> Dict[str, xr.DataArray]:
-    """Split uvmet into u_met and v_met."""
-    return {"u_met": ds["uvmet"][0], "v_met": ds["uvmet"][1]}
-
-
-fn_uv_split = PostProcFn(
-    requires=["uvmet"],
-    returns=["u_met", "v_met"],
-    fn=_split_uvmet,
-)
-
-
 class PostProcStage(Stage):
-    """Post-processing stage for wrfout files. Extracts variables and applies post-processing functions."""
+    """Post-processing stage for wrfout files. Extracts variables and applies post-processing functions.
+
+    Every variable needed (in `extract_vars` or required by a postproc fn) that no postproc fn returns is read from the
+    wrfout file: WRF fields as they are, wrf-python derived variables via `wrf.getvar()` (see `variables.py`). Then the
+    postproc fns run in order, each seeing what the file provided and what the fns before it returned.
+    """
 
     wrfout_dir: TPath  # directory with wrfout files (relative to sim_dir)
     domain: int  # domain to process, e.g. 1 for d01 (1-indexed!)
 
-    # Variables to extract from wrfout files using wrf-python.
-    # ALL-CAPS vars taken from wrfout directly, lower-case vars are processed by wrf.getvar()
+    # Variables to extract from wrfout files and store in the output: WRF fields (ALL-CAPS) or derived variables.
     extract_vars: TVarList
 
-    # List of post-processing functions and their required variables
-    # Each entry is a tuple of (function_name, function_callable, optional list_of_required_vars).
-    # Postproc function takes postproc dataset and returns dict of new variables to add to dataset.
+    # Post-processing functions, applied in order. Postproc fn takes postproc dataset and returns dict of new
+    # variables to add to dataset. wrf-python derived variables they require are read from the file beforehand.
     postproc_fns: List[PostProcFn] = []
+
+    # iofields file of the WRF run (usually `myoutfields.txt`, as in `WRFStage.myoutfields_path`). If given, it is
+    # checked at init that WRF writes every WRF field needed for post-processing to `iofields_stream`.
+    myoutfields_path: TPathExists | None = None
+    iofields_stream: int = 7  # history stream of the post-processed `wrfout_aux` files (auxhist7)
 
     compression: bool
     run_parallel: bool = False  # whether to run in parallel using multiprocessing
@@ -184,10 +80,10 @@ class PostProcStage(Stage):
             )
         return self
 
-    # NOTE: Both validators below must be model validators (not field validators), because field validators
-    # are skipped for default values. Subclasses like Cn2PostProcStage define `extract_vars` as a class
-    # default, so a field validator would never see it. Model validators run in definition order, so
-    # `ensure_defaults` fills in the defaults before `set_default_postproc_fns` moves vars to postproc fns.
+    # NOTE: The validators below must be model validators (not field validators), because field validators are
+    # skipped for default values. Subclasses like Cn2PostProcStage define `extract_vars` as a class default, so a
+    # field validator would never see it. Model validators run in definition order, so `ensure_defaults` fills in
+    # the defaults before `check_vars` checks them.
     @pydantic.model_validator(mode="after")
     def ensure_defaults(self) -> Self:
         """Ensure reasonable defaults like pressure level height and terrain height are included."""
@@ -208,25 +104,60 @@ class PostProcStage(Stage):
         return self
 
     @pydantic.model_validator(mode="after")
-    def set_default_postproc_fns(self) -> Self:
-        fns = []
-
-        # in wrfout, w=wa, but we want it as w
-        if "w" in self.extract_vars:
-            fns.append(fn_w_rename)
-            self.extract_vars.remove("w")  # will be added by postproc function, so remove from extract_vars
-
-        # wrf.getvar() returns u_met and v_met in one variable, so we need to add a postproc function to split them
-        if "u_met" in self.extract_vars or "v_met" in self.extract_vars:
-            fns.append(fn_uv_split)
-            if "u_met" in self.extract_vars:
-                self.extract_vars.remove("u_met")
-            if "v_met" in self.extract_vars:
-                self.extract_vars.remove("v_met")
-
-        # Add default postproc fns to the top, so downstream fns can depend on them
-        self.postproc_fns = [*fns, *self.postproc_fns]
+    def check_vars(self) -> Self:
+        """Check at init that every variable needed can be read from the wrfout files or is returned in time."""
+        self._check_wrf_fields_written()
+        self._check_postproc_fn_order()
         return self
+
+    def vars_to_read(self) -> TVarList:
+        """Variables read from the wrfout file: everything needed that no postproc fn returns (unique, in order)."""
+        returned = {name for fn in self.postproc_fns for name in fn.returns}
+        needed = [*self.extract_vars, *(v for fn in self.postproc_fns for v in fn.requires)]
+        to_read = {}
+        for v in needed:
+            name = var_name(v)
+            if name in returned:
+                continue
+            if to_read.setdefault(name, v) != v:  # e.g. EL_PBL once as it is, once destaggered
+                raise ValueError(
+                    f"'{name}' is needed both as {to_read[name]!r} and as {v!r}; it can be read only one way."
+                )
+        return list(to_read.values())
+
+    def _check_wrf_fields_written(self):
+        """First check: WRF writes every WRF field needed to read `vars_to_read` (per `myoutfields_path`)."""
+        needed_for = {f: "coordinates" for f in REQUIRED_WRF_FIELDS}  # WRF field -> variable it is needed for
+        for name in map(var_name, self.vars_to_read()):
+            for f in wrf_fields_of(name):  # raises for unknown derived variables, also without `myoutfields_path`
+                needed_for.setdefault(f, name)
+
+        if self.myoutfields_path is None:
+            logger.warning(
+                f"No 'myoutfields_path' set for {self.name}: cannot check that WRF writes {list(needed_for)}."
+            )
+            return
+
+        written = parse_myoutfields(self.myoutfields_path, self.iofields_stream)
+        missing = [f if v == f else f"{f} (for {v})" for f, v in needed_for.items() if f.upper() not in written]
+        if missing:
+            raise ValueError(
+                f"WRF fields needed for post-processing are not written to history stream {self.iofields_stream} "
+                f"according to '{self.myoutfields_path}': {', '.join(missing)}. Add them there or drop the "
+                f"variables and postproc fns that need them."
+            )
+
+    def _check_postproc_fn_order(self):
+        """Second check: step through the postproc fns, each may only require what is available before it."""
+        available = {var_name(v) for v in self.vars_to_read()}
+        for fn in self.postproc_fns:
+            missing = [var_name(v) for v in fn.requires if var_name(v) not in available]
+            if missing:
+                raise ValueError(
+                    f"Postproc fn '{fn.fn.__name__}' requires {missing}, returned only by a later postproc fn. "
+                    f"Reorder `postproc_fns`."
+                )
+            available |= set(fn.returns)
 
     def get_inputs(self, s: Simulation) -> List[pathlib.Path]:
         """Get wrfout files for post-processing. Discard files from warmup period by default."""
@@ -328,17 +259,9 @@ class PostProcStage(Stage):
             logger.info(f"Output file {f_out} already exists. Skipping.")
             return
 
-        # Collect dependency variables from postproc_fns
-        extract_vars = copy.deepcopy(self.extract_vars)
-        for fn in self.postproc_fns:
-            # Add required variables to extract_vars if not already present
-            for v in fn.requires:
-                if v not in extract_vars:
-                    extract_vars.append(v)
-
         # Load wrfout file
         logger.info(f"Post-processing {f.name}...")
-        ds = load_wrfout(f, vars_to_extract=extract_vars)
+        ds = load_wrfout(f, vars_to_extract=self.vars_to_read())
 
         # Apply postproc functions
         for fn in self.postproc_fns:
@@ -347,11 +270,10 @@ class PostProcStage(Stage):
             for name, data in new_vars.items():
                 ds[name] = data
 
-        # Select only vars requested explicitly OR from postproc
-        extract_vars = [v[0] if isinstance(v, tuple) else v for v in self.extract_vars]  # remove destagger dim
-        for fn in self.postproc_fns:
-            extract_vars.extend(fn.returns)
-        ds = ds[extract_vars]
+        # Select only vars requested explicitly OR returned by the stage's own postproc fns
+        keep = [var_name(v) for v in self.extract_vars]
+        keep += [name for fn in self.postproc_fns for name in fn.returns]
+        ds = ds[list(dict.fromkeys(keep))]
 
         # wrf-python returns some computed variables (z, w, u_met, v_met, slp) as float64, which doubles their
         # size on disk and in RAM without adding information: WRF itself is single precision.

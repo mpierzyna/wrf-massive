@@ -9,7 +9,13 @@ import pytest
 from wrf_massive.base import Simulation, Stage, TPath
 
 TEST_ROOT = pathlib.Path(__file__).parent
+# 5x5 cuts of wrfout_aux files (2 time steps each), see `wrfout/subset_wrfout.sh`. They differ in the fields WRF wrote:
+# - wrfout: Netherlands run; rain/snow (QRAIN, QSNOW), no 2 m or surface pressure fields
+# - wrfout_extended: alps run, written with the `myoutfields.txt` next to it; PSFC/Q2/TSK, the MYNN variances QSQ/COV,
+#   RAINNC and the WRF-Solar cloud fields, but no QRAIN/QSNOW
 WRFOUT_DIR = TEST_ROOT / "wrfout"
+WRFOUT_EXTENDED_DIR = TEST_ROOT / "wrfout_extended"
+WRFOUT_DIRS = [WRFOUT_DIR, WRFOUT_EXTENDED_DIR]
 
 
 class StageA(Stage):
