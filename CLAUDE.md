@@ -198,7 +198,9 @@ postproc).
    `ERA5`) from a single Jinja2 template, copies `Vtable.CERRA` + WPS run/setup scripts into the stage work dir, then
    `run_wps.sh` runs `geogrid.exe` once, `ungrib.exe` once per forcing source (linking `CERRA*.grb`/`ERA5*.grb` from
    `forcing_dir` via `link_grib.csh`, swapping in the right `Vtable`/`namelist.wps`), and finally `metgrid.exe`
-   (`fg_name = 'ERA5','CERRA'`) to produce `met_em*` files.
+   (`fg_name = 'ERA5','CERRA'`) to produce `met_em*` files. `is_done` (`is_metgrid_successful`) needs `met_em*`
+   plus the success line in `metgrid.log` (serial) or rank 0's `metgrid.log.0000` (MPI via `$RUNNER`), matching the
+   `LOG_EXT` logic of `run_wps.sh`.
 3. **`wrf`** (`stages/wrf/wrf.py`) — renders `namelist.input`, links `met_em*` output, runs WRF. A model validator
    compares `resources.n_tasks` with `stages/wrf/utils.py::estimate_ncpus_from_namelist` (UCAR forum rule
    e_we/100·e_sn/100 … e_we/25·e_sn/25; nests: max of the lower, min of the upper limits) and logs info/warning,

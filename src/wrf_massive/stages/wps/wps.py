@@ -17,16 +17,20 @@ logger = get_logger("stages.wps")
 
 
 def is_metgrid_successful(wps_dir: pathlib.Path) -> bool:
-    """Check if metgrid completed successfully by checking for `met_em*` files and succes in metgrid.log."""
+    """Check if metgrid completed successfully by checking for `met_em*` files and success in the metgrid log.
+
+    A serial run writes `metgrid.log`; under MPI (`$RUNNER`, e.g. srun) every rank writes its own `metgrid.log.NNNN`,
+    so success is confirmed via the rank-0 log `metgrid.log.0000`, like `run_wps.sh` does.
+    """
 
     def _metgrid_log_ok() -> bool:
-        """Check that metgrid.log exists and contains success message."""
-        metgrid_log = wps_dir / "metgrid.log"
-        if not metgrid_log.exists():
-            return False
-        with metgrid_log.open("r") as f:
-            for line in f:
-                if "Successful completion of program metgrid.exe" in line:
+        """Check that metgrid.log (serial) or metgrid.log.0000 (MPI rank 0) contains the success message."""
+        for name in ("metgrid.log", "metgrid.log.0000"):
+            metgrid_log = wps_dir / name
+            if not metgrid_log.exists():
+                continue
+            with metgrid_log.open("r", errors="ignore") as f:
+                if any("Successful completion of program metgrid.exe" in line for line in f):
                     return True
         return False
 
