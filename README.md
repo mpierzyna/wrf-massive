@@ -51,7 +51,7 @@ wrf-massive is installed from GitHub into your own project, at a release tag.
 
 ```bash
 uv init my_study && cd my_study   # new project, unless you already have one
-uv add "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.1.1"
+uv add "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.2.0"
 uv run wrf-massive --help
 ```
 
@@ -59,7 +59,7 @@ To use the postprocessing stages, add wrf-massive with the `postproc` extra inst
 `wrf-python` version that wrf-massive pins (a git tag of NCAR's repository):
 
 ```bash
-uv add "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@v2.1.1"
+uv add "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@v2.2.0"
 ```
 
 Prefix the commands below with `uv run`, or activate the environment with `source .venv/bin/activate`.
@@ -68,7 +68,7 @@ Prefix the commands below with `uv run`, or activate the environment with `sourc
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.1.1"
+pip install "wrf-massive @ git+https://github.com/mpierzyna/wrf-massive@v2.2.0"
 wrf-massive --help
 ```
 
@@ -77,7 +77,7 @@ older release on PyPI:
 
 ```bash
 pip install "wrf-python @ git+https://github.com/NCAR/wrf-python@v1.4.2" \
-            "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@v2.1.1"
+            "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@v2.2.0"
 ```
 
 ### As a git submodule
@@ -87,7 +87,7 @@ it as a submodule and install it in editable mode:
 
 ```bash
 git submodule add https://github.com/mpierzyna/wrf-massive submodules/wrf-massive
-git -C submodules/wrf-massive checkout v2.1.1
+git -C submodules/wrf-massive checkout v2.2.0
 uv add --editable ./submodules/wrf-massive              # or with --extra postproc
 ```
 
