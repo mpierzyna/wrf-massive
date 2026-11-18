@@ -53,10 +53,12 @@ def _write_multi_time_grib(path, times, edition: int = 1):
     pathlib.Path(path).write_bytes(b"".join(build(t) for t in times))
 
 
-@pytest.fixture
-def simulation_with_area(simple_simulation) -> Simulation:
-    simple_simulation.area = BBox(north=54, west=2, south=50, east=8)
-    return simple_simulation
+def _sim_with_area(sim_dir: pathlib.Path) -> Simulation:
+    """Like `simple_simulation`, with an area; a separate one per case."""
+    sim_dir.mkdir(parents=True)
+    s = Simulation(sim_dir=sim_dir, settings={}, warmup_h=12, begin="2025-01-01", end="2025-01-02")
+    s.area = BBox(north=54, west=2, south=50, east=8)
+    return s
 
 
 def make_stage(**overrides) -> PullCdsStage:
@@ -111,27 +113,25 @@ def _install_fake_cdsapi(monkeypatch, period_times: dict | None = None) -> list:
     return events
 
 
-def test_area_required_only_for_cropped_requests(simple_simulation):
-    """Requests with `use_area` (the default) need `Simulation.area`; full-domain requests do not."""
+def test_setup_writes_request_yaml(simple_simulation, tmp_path):
+    """Each request spec becomes a request sidecar per month, carrying its own dataset-specific fields. Requests with
+    `use_area` (the default) need `Simulation.area`, full-domain ones do not. Each per-month request stays inside its
+    month, and stages sharing a work_dir with overlapping file suffixes keep separate sidecars."""
     with pytest.raises(ValueError, match="Simulation.area"):
         make_stage().setup(simple_simulation)
-
-    stage = make_stage(
-        requests=[
-            CdsRequestSpec(
-                dataset="reanalysis-cerra-single-levels",
-                variables=["2m_temperature"],
-                file_suffix="SFC",
-                use_area=False,
-            ),
-        ],
+    full_domain = CdsRequestSpec(
+        dataset="reanalysis-cerra-single-levels",
+        variables=["2m_temperature"],
+        file_suffix="FULL",
+        product_type=["analysis"],
+        use_area=False,
+        extra_params={"data_type": ["reanalysis"]},
     )
+    stage = make_stage(requests=[full_domain])
     stage.setup(simple_simulation)  # simple_simulation has no area; must not raise
     assert stage.is_setup(simple_simulation)
 
-
-def test_setup_writes_request_yaml(simulation_with_area):
-    """Each request spec becomes a request sidecar per month, carrying its own dataset-specific fields."""
+    s = _sim_with_area(tmp_path / "sim")
     stage = make_stage(
         requests=[
             CdsRequestSpec(dataset="reanalysis-era5-single-levels", variables=["2m_temperature"], file_suffix="SFC"),
@@ -141,107 +141,78 @@ def test_setup_writes_request_yaml(simulation_with_area):
                 levels=["1000", "925"],
                 file_suffix="PRES",
             ),
-            CdsRequestSpec(
-                dataset="reanalysis-cerra-single-levels",
-                variables=["2m_temperature"],
-                file_suffix="FULL",
-                product_type=["analysis"],
-                use_area=False,
-                extra_params={"data_type": ["reanalysis"]},
-            ),
+            full_domain,
         ],
     )
-    assert not stage.is_setup(simulation_with_area)
-    stage.setup(simulation_with_area)
-    assert stage.is_setup(simulation_with_area)
+    assert not stage.is_setup(s)
+    stage.setup(s)
+    assert stage.is_setup(s)
 
-    sfc = load_req(stage, simulation_with_area, "ERA5_SFC_202501")
+    sfc = load_req(stage, s, "ERA5_SFC_202501")
     assert sfc["variable"] == ["2m_temperature"]
     assert sfc["area"] == [54, 2, 50, 8]
     assert sfc["product_type"] == ["reanalysis"]
     assert "pressure_level" not in sfc
-
-    assert load_req(stage, simulation_with_area, "ERA5_PRES_202501")["pressure_level"] == ["1000", "925"]
-
-    full = load_req(stage, simulation_with_area, "ERA5_FULL_202501")
+    assert load_req(stage, s, "ERA5_PRES_202501")["pressure_level"] == ["1000", "925"]
+    full = load_req(stage, s, "ERA5_FULL_202501")
     assert "area" not in full
     assert full["product_type"] == ["analysis"]
     assert full["data_type"] == ["reanalysis"]
 
-
-def test_month_split_is_waste_free(simulation_with_area):
-    """Each per-month request stays inside its own month -- no cross-product bleed across the boundary."""
-    stage = make_stage()
-    stage.setup(simulation_with_area)
-
-    dec = load_req(stage, simulation_with_area, "ERA5_SFC_202412")
-    jan = load_req(stage, simulation_with_area, "ERA5_SFC_202501")
+    dec, jan = load_req(stage, s, "ERA5_SFC_202412"), sfc  # no cross-product bleed across the month boundary
     assert (dec["year"], dec["month"], dec["day"]) == (["2024"], ["12"], ["31"])
     assert (jan["year"], jan["month"], jan["day"]) == (["2025"], ["01"], ["01", "02"])
 
-
-def test_run_calls_cdsapi_client_per_month_splits_and_is_done(monkeypatch, simulation_with_area):
-    stage = make_stage()
-    stage.setup(simulation_with_area)
-
-    period_times = {k: v for k, v in stage._periods(simulation_with_area).items()}
-    events = _install_fake_cdsapi(monkeypatch, period_times)
-
-    assert not stage.is_done(simulation_with_area)
-    stage.run(simulation_with_area)
-
-    # All jobs are submitted before any is downloaded, so they queue in parallel at CDS.
-    kinds = [kind for kind, _ in events]
-    assert kinds == ["submit", "submit", "download", "download"]  # two calendar months
-
-    work_dir = stage.get_work_dir(simulation_with_area)
-    # The multi-time monthly downloads are split into one file per valid time and then removed.
-    assert not (work_dir / "ERA5_SFC_202412.grb").exists() and not (work_dir / "ERA5_SFC_202501.grb").exists()
-    all_times = [t for times in period_times.values() for t in times]
-    for t in all_times:
-        assert (work_dir / f"ERA5_SFC_{t.year:04d}{t.month:02d}{t.day:02d}_{t.hour:02d}{t.minute:02d}.grb").exists()
-    assert len(list(work_dir.glob("ERA5_SFC_*_*.grb"))) == len(all_times)
-    assert stage.is_done(simulation_with_area)
+    cerra = make_stage(
+        work_dir="shared",
+        prefix="CERRA",
+        requests=[full_domain.model_copy(update={"file_suffix": "SFC", "extra_params": {}})],
+    )
+    era5 = make_stage(work_dir="shared")
+    cerra.setup(s)
+    era5.setup(s)  # must not clobber the CERRA request written above
+    cerra_req, era5_req = load_req(cerra, s, "CERRA_SFC_202501"), load_req(era5, s, "ERA5_SFC_202501")
+    assert cerra_req["product_type"] == ["analysis"] and "area" not in cerra_req
+    assert era5_req["product_type"] == ["reanalysis"] and "area" in era5_req
+    assert cerra.is_setup(s) and era5.is_setup(s)
 
 
-def test_run_skips_already_downloaded_months(monkeypatch, simulation_with_area):
-    """An interrupted pull resumes: a month whose per-time files already exist is not re-requested."""
-    stage = make_stage()
-    stage.setup(simulation_with_area)
-
-    # Pretend December was already fetched and split in a previous run (per-time files present).
-    work_dir = stage.get_work_dir(simulation_with_area)
-    for t in stage._periods(simulation_with_area)["202412"]:
-        (work_dir / f"ERA5_SFC_{t.year:04d}{t.month:02d}{t.day:02d}_{t.hour:02d}{t.minute:02d}.grb").write_bytes(b"x")
-
-    period_times = {k: v for k, v in stage._periods(simulation_with_area).items()}
-    events = _install_fake_cdsapi(monkeypatch, period_times)
-    stage.run(simulation_with_area)
-
-    submits = [target for kind, target in events if kind == "submit"]
-    downloads = [target for kind, target in events if kind == "download"]
-    assert len(submits) == 1 and len(downloads) == 1
-    assert downloads[0].endswith("ERA5_SFC_202501.grb")
+def _per_time_file(work_dir: pathlib.Path, t: pd.Timestamp) -> pathlib.Path:
+    return work_dir / f"ERA5_SFC_{t.year:04d}{t.month:02d}{t.day:02d}_{t.hour:02d}{t.minute:02d}.grb"
 
 
-def test_run_resumes_split_from_existing_monthly(monkeypatch, simulation_with_area):
-    """A month downloaded but not yet split on a previous run is split without being re-requested."""
-    stage = make_stage()
-    stage.setup(simulation_with_area)
+def test_run(monkeypatch, tmp_path):
+    """All months are submitted before any is downloaded (so they queue in parallel at CDS); the multi-time monthly
+    downloads are split into one file per valid time and removed. An interrupted pull resumes: a month whose per-time
+    files exist is not re-requested, and a month downloaded but not yet split is only split."""
+    cases = ["fresh", "already_split", "not_yet_split"]
+    for case in cases:
+        s = _sim_with_area(tmp_path / case)
+        stage = make_stage()
+        stage.setup(s)
+        work_dir = stage.get_work_dir(s)
+        period_times = dict(stage._periods(s))
+        if case == "already_split":  # December fetched and split in a previous run
+            for t in period_times["202412"]:
+                _per_time_file(work_dir, t).write_bytes(b"x")
+        elif case == "not_yet_split":  # December downloaded in a previous run
+            _write_multi_time_grib(work_dir / "ERA5_SFC_202412.grb", period_times["202412"], edition=1)
 
-    period_times = {k: v for k, v in stage._periods(simulation_with_area).items()}
-    work_dir = stage.get_work_dir(simulation_with_area)
-    _write_multi_time_grib(work_dir / "ERA5_SFC_202412.grb", period_times["202412"], edition=1)
+        events = _install_fake_cdsapi(monkeypatch, period_times)
+        assert not stage.is_done(s)
+        stage.run(s)
 
-    events = _install_fake_cdsapi(monkeypatch, period_times)
-    stage.run(simulation_with_area)
-
-    submits = [target for kind, target in events if kind == "submit"]
-    assert len(submits) == 1  # only January is re-requested; December is only split
-    for t in period_times["202412"]:
-        assert (work_dir / f"ERA5_SFC_{t.year:04d}{t.month:02d}{t.day:02d}_{t.hour:02d}{t.minute:02d}.grb").exists()
-    assert not (work_dir / "ERA5_SFC_202412.grb").exists()  # aggregate removed after split
-    assert stage.is_done(simulation_with_area)
+        kinds = [kind for kind, _ in events]
+        if case == "fresh":
+            assert kinds == ["submit", "submit", "download", "download"]  # two calendar months
+        else:
+            assert kinds == ["submit", "download"], case  # only January is requested
+            assert events[-1][1].endswith("ERA5_SFC_202501.grb")
+        assert not (work_dir / "ERA5_SFC_202412.grb").exists() and not (work_dir / "ERA5_SFC_202501.grb").exists()
+        all_times = [t for times in period_times.values() for t in times]
+        assert all(_per_time_file(work_dir, t).exists() for t in all_times), case
+        assert len(list(work_dir.glob("ERA5_SFC_*_*.grb"))) == len(all_times)
+        assert stage.is_done(s)
 
 
 def test_split_grib_by_reference_time_roundtrip(tmp_path):
@@ -256,35 +227,3 @@ def test_split_grib_by_reference_time_roundtrip(tmp_path):
         # Two messages share 00:00 -> concatenated in that file; one message at 03:00.
         assert written["20200701_0000"].read_bytes() == messages[0] + messages[1]
         assert written["20200701_0300"].read_bytes() == messages[2]
-
-
-def test_shared_work_dir_requests_do_not_collide(simulation_with_area):
-    """Two stages sharing a work_dir with overlapping file suffixes must keep separate request sidecars."""
-    cerra = PullCdsStage(
-        work_dir="forcing",
-        prefix="CERRA",
-        requests=[
-            CdsRequestSpec(
-                dataset="reanalysis-cerra-single-levels",
-                variables=["2m_temperature"],
-                file_suffix="SFC",
-                product_type=["analysis"],
-                use_area=False,
-            ),
-        ],
-    )
-    era5 = PullCdsStage(
-        work_dir="forcing",
-        prefix="ERA5",
-        requests=[
-            CdsRequestSpec(dataset="reanalysis-era5-single-levels", variables=["skin_temperature"], file_suffix="SFC"),
-        ],
-    )
-    cerra.setup(simulation_with_area)
-    era5.setup(simulation_with_area)  # must not clobber the CERRA request written above
-
-    cerra_req = load_req(cerra, simulation_with_area, "CERRA_SFC_202501")
-    era5_req = load_req(era5, simulation_with_area, "ERA5_SFC_202501")
-    assert cerra_req["product_type"] == ["analysis"] and "area" not in cerra_req
-    assert era5_req["product_type"] == ["reanalysis"] and "area" in era5_req
-    assert cerra.is_setup(simulation_with_area) and era5.is_setup(simulation_with_area)

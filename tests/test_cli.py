@@ -96,10 +96,30 @@ def use_pipeline(ws: pathlib.Path, name: str):
 # Workspace discovery ---------------------------------------------------------------------------------------------
 
 
-def test_find_env_file(ws):
-    """env.yaml is searched upwards; other env files are never used."""
+def test_workspace_discovery(ws):
+    """env.yaml is searched upwards (other env files are never used) and its dir is the root, also when it is a
+    symlink. `.` inside a sim dir is that sim dir; pipeline.py runs in the root, where `load_env()` sees the env."""
+    write_env(ws / "env.yaml", pipeline="p_test", require_marker=True, work_dir="alt")
+    (ws / "marker.txt").touch()
     write_env(ws / "sim_1" / "env_m.yaml", pipeline="p_test")
     assert find_env_file(start=ws / "sim_1") == ws / "env.yaml"
+
+    os.chdir(ws / "sim_1")
+    assert load_env()["work_dir"] == "alt"
+    result = invoke("run", "-s", "a", ".")
+    assert result.exit_code == 0, result.output
+    assert (ws / "sim_1" / "alt" / "result.txt").exists()
+    assert not (ws / "sim_1" / "b").exists()
+    assert pathlib.Path.cwd() == ws
+
+    # A symlinked env.yaml makes its own dir the root, not the dir of the link target
+    (ws / "machines").mkdir()
+    (ws / "env.yaml").rename(ws / "machines" / "env_m.yaml")
+    (ws / "env.yaml").symlink_to("machines/env_m.yaml")
+    os.chdir(ws / "sim_1")
+    result = invoke("run", "-s", "a", ".")
+    assert result.exit_code == 0, result.output
+    assert pathlib.Path.cwd() == ws
 
 
 def test_outside_workspace(tmp_path):
@@ -115,84 +135,12 @@ def test_outside_workspace(tmp_path):
     assert "No env.yaml found" in result.output
 
 
-def test_run_from_sim_subdir(ws):
-    """Run from inside a sim dir: `.` is the sim dir, pipeline.py is found in the root and runs there."""
-    write_env(ws / "env.yaml", pipeline="p_test", require_marker=True)
-    (ws / "marker.txt").touch()
-    os.chdir(ws / "sim_1")
-
-    result = invoke("run", "-s", "a", ".")
-
-    assert result.exit_code == 0, result.output
-    assert (ws / "sim_1" / "a" / "result.txt").exists()
-    assert not (ws / "sim_1" / "b").exists()
-    assert pathlib.Path.cwd() == ws
-
-
-def test_load_env(ws):
-    """`load_env()` returns the workspace's env.yaml, in pipeline.py (run by the CLI) and from any subdir."""
-    write_env(ws / "env.yaml", pipeline="p_test", work_dir="alt")
-    os.chdir(ws / "sim_1")
-    assert load_env()["work_dir"] == "alt"
-
-    result = invoke("run", "-s", "a", ".")
-
-    assert result.exit_code == 0, result.output
-    assert (ws / "sim_1" / "alt" / "result.txt").exists()
-
-
-def test_symlinked_env_file_root_is_link_dir(ws):
-    """A symlinked env.yaml makes its own dir the root, not the dir of the link target."""
-    (ws / "machines").mkdir()
-    (ws / "env.yaml").rename(ws / "machines" / "env_m.yaml")
-    (ws / "env.yaml").symlink_to("machines/env_m.yaml")
-
-    result = invoke("run", "-s", "a", "sim_1")
-
-    assert result.exit_code == 0, result.output
-    assert pathlib.Path.cwd() == ws
-
-
-def test_unknown_pipeline(ws):
-    use_pipeline(ws, "p_bogus")
-
-    result = invoke("run", "sim_1")
-
-    assert result.exit_code != 0
-    assert "Pipeline 'p_bogus'" in result.output
-    assert "p_test" in result.output  # lists available pipelines
-
-
-def test_pipeline_import_error_is_reported(ws):
-    """Errors while building the pipeline (e.g. invalid paths in the env file) name the env file."""
-    write_env(ws / "env.yaml", pipeline="p_test", require_marker=True)  # marker.txt missing
-
-    result = invoke("run", "sim_1")
-
-    assert result.exit_code != 0
-    assert "Failed to load" in result.output
-    assert str(ws / "env.yaml") in result.output
-
-
-# Logging ---------------------------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("log_level, expected", [(None, logging.INFO), ("WarNing", logging.WARNING)])
-def test_log_level(ws, log_level, expected):
+def test_log_level(ws):
     """`log_level` from the env file (case-insensitive) sets the root log level; default is info."""
-    settings = {"pipeline": "p_test"} | ({"log_level": log_level} if log_level else {})
-    write_env(ws / "env.yaml", **settings)
-    assert invoke("run", "sim_1").exit_code == 0
-    assert logging.getLogger().level == expected
-
-
-def test_log_level_invalid(ws):
-    write_env(ws / "env.yaml", pipeline="p_test", log_level="loud")
-
-    result = invoke("run", "sim_1")
-
-    assert result.exit_code != 0
-    assert "Invalid log_level 'loud'" in result.output
+    for settings, expected in [({}, logging.INFO), ({"log_level": "WarNing"}, logging.WARNING)]:
+        write_env(ws / "env.yaml", pipeline="p_test", **settings)
+        assert invoke("run", "sim_1").exit_code == 0
+        assert logging.getLogger().level == expected
 
 
 def test_init_sims_from_subdir(ws):
@@ -207,6 +155,9 @@ def test_init_sims_from_subdir(ws):
     result = invoke("init-sims", "--root", ".", "../simulations.py", "sim_x")
     assert result.exit_code == 0, result.output
     assert (ws / "sim_1" / "sim_x" / "simulation.yaml").exists()
+
+
+# Errors ----------------------------------------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -226,12 +177,70 @@ def env_hash(ws: pathlib.Path) -> str:
     return hashlib.sha256((ws / "env.yaml").read_bytes()).hexdigest()
 
 
+def test_errors_are_reported_before_anything_runs(ws, fake_sbatch):
+    """Invalid env files, pipelines and arguments are rejected with a clear message before anything is run or
+    submitted."""
+    (ws / "job.sh").touch()
+    cases = [  # env.yaml settings, CLI args, expected messages
+        ({"pipeline": "p_bogus"}, ["run", "sim_1"], ["Pipeline 'p_bogus'", "p_test"]),  # lists available pipelines
+        ({"require_marker": True}, ["run", "sim_1"], ["Failed to load", str(ws / "env.yaml")]),  # pipeline.py raises
+        ({"log_level": "loud"}, ["run", "sim_1"], ["Invalid log_level 'loud'"]),
+        ({}, ["teardown"], ["At least one simulation directory"]),
+        ({}, ["run", "-s", "bogus", "sim_1"], ["not found in pipeline"]),
+        ({"pipeline": "p_no_resources"}, ["submit", "-j", "job.sh", "sim_1"], ["does not have resources"]),
+        ({}, ["submit", "sim_1"], ["No job script: set `job_file`"]),
+        ({"job_file": "missing.sh"}, ["submit", "sim_1"], ["does not exist"]),
+    ]
+    for settings, args, messages in cases:
+        write_env(ws / "env.yaml", **({"pipeline": "p_test"} | settings))
+        os.chdir(ws)
+
+        result = invoke(*args)
+
+        assert result.exit_code != 0, args
+        for message in messages:
+            assert message in result.output, (args, result.output)
+        assert not fake_sbatch
+        assert not (ws / "sim_1" / "a").exists()
+
+
+def test_job_fails_if_env_changed_since_submit(ws):
+    """A job submitted with one env.yaml fails loudly instead of running with another one."""
+    (ws / "env.yaml").rename(ws / "env_m1.yaml")
+    (ws / "env.yaml").symlink_to("env_m1.yaml")
+    submitted = env_hash(ws)
+    original = (ws / "env_m1.yaml").read_text()
+
+    result = invoke("run", "-s", "b", "sim_1", env={ENV_HASH_ENVVAR: submitted})
+    assert result.exit_code == 0, result.output  # unchanged
+
+    def relink():
+        write_env(ws / "env_m2.yaml", pipeline="p_test", work_dir="alt")
+        (ws / "env.yaml").unlink()
+        (ws / "env.yaml").symlink_to("env_m2.yaml")
+
+    for change in [lambda: write_env(ws / "env_m1.yaml", pipeline="p_test", work_dir="alt"), relink]:
+        change()
+        os.chdir(ws)
+
+        result = invoke("run", "sim_1", env={ENV_HASH_ENVVAR: submitted})
+
+        assert result.exit_code != 0
+        assert "changed since this job was submitted" in result.output
+        assert ("-> env_m2.yaml" in result.output) == (change is relink)
+        assert not (ws / "sim_1" / "a").exists() and not (ws / "sim_1" / "alt").exists()
+        (ws / "env_m1.yaml").write_text(original)
+
+
+# Submit and teardown ---------------------------------------------------------------------------------------------
+
+
 def test_submit(ws, fake_sbatch):
+    """Stages are chained with afterok and the env hash; the job file comes from `-j` or else from the env file's
+    `job_file` (relative to the workspace root); `--debug` is a dry run."""
     (ws / "job.sh").touch()
     os.chdir(ws / "sim_1")
-
     result = invoke("submit", "-j", "../job.sh", ".")
-
     assert result.exit_code == 0, result.output
     assert len(fake_sbatch) == 2  # stages a, b
     (cmd_a, kwargs_a), (cmd_b, _) = fake_sbatch
@@ -242,93 +251,22 @@ def test_submit(ws, fake_sbatch):
     assert "--nodes=2" in cmd_b
     assert "--dependency=afterok:101" in cmd_b
 
-
-def test_submit_job_file_from_env(ws, fake_sbatch):
-    """Without --jobfile, the env file's `job_file` (relative to the workspace root) is used; --jobfile overrides it."""
     write_env(ws / "env.yaml", pipeline="p_test", job_file="job.sh")
-    (ws / "job.sh").touch()
     (ws / "other.sh").touch()
     os.chdir(ws / "sim_1")
-
-    result = invoke("submit", "-s", "a", ".")
-    assert result.exit_code == 0, result.output
+    assert invoke("submit", "-s", "a", ".").exit_code == 0
     assert fake_sbatch[-1][0][-3] == str(ws / "job.sh")
-
     os.chdir(ws / "sim_1")
-    result = invoke("submit", "-s", "a", "-j", "../other.sh", ".")
-    assert result.exit_code == 0, result.output
+    assert invoke("submit", "-s", "a", "-j", "../other.sh", ".").exit_code == 0
     assert fake_sbatch[-1][0][-3] == str(ws / "other.sh")
 
-
-@pytest.mark.parametrize("change", [None, "edit", "relink"])
-def test_job_fails_if_env_changed_since_submit(ws, change):
-    """A job submitted with one env.yaml fails loudly instead of running with another one."""
-    (ws / "env.yaml").rename(ws / "env_m1.yaml")
-    (ws / "env.yaml").symlink_to("env_m1.yaml")
-    submitted = env_hash(ws)
-    if change == "edit":
-        write_env(ws / "env_m1.yaml", pipeline="p_test", work_dir="alt")
-    elif change == "relink":
-        write_env(ws / "env_m2.yaml", pipeline="p_test", work_dir="alt")
-        (ws / "env.yaml").unlink()
-        (ws / "env.yaml").symlink_to("env_m2.yaml")
-
-    result = invoke("run", "sim_1", env={ENV_HASH_ENVVAR: submitted})
-
-    if change is None:
-        assert result.exit_code == 0, result.output
-        return
-    assert result.exit_code != 0
-    assert "changed since this job was submitted" in result.output
-    assert ("-> env_m2.yaml" in result.output) == (change == "relink")
-    assert not (ws / "sim_1" / "a").exists() and not (ws / "sim_1" / "alt").exists()
-
-
-@pytest.mark.parametrize(
-    "job_file, message",
-    [(None, "No job script: set `job_file`"), ("missing.sh", "does not exist")],
-)
-def test_submit_without_job_script(ws, fake_sbatch, job_file, message):
-    write_env(ws / "env.yaml", pipeline="p_test", **({"job_file": job_file} if job_file else {}))
-
-    result = invoke("submit", "sim_1")
-
-    assert result.exit_code != 0
-    assert message in result.output
-    assert not fake_sbatch
-
-
-def test_submit_debug_is_dry_run(ws, fake_sbatch):
-    (ws / "job.sh").touch()
-
+    n_submitted = len(fake_sbatch)
     result = invoke("--debug", "submit", "-s", "a", "-j", "job.sh", "sim_1")
-
     assert result.exit_code == 0, result.output
-    assert not fake_sbatch
+    assert len(fake_sbatch) == n_submitted
     assert "Dry run" in result.output
     assert f"{ENV_HASH_ENVVAR}={env_hash(ws)}" in result.output
     assert logging.getLogger("wrf_massive").level == logging.DEBUG
-
-
-@pytest.mark.parametrize(
-    "pipeline, args, message",
-    [
-        ("p_test", ["teardown"], "At least one simulation directory"),
-        ("p_test", ["run", "-s", "bogus", "sim_1"], "not found in pipeline"),
-        ("p_no_resources", ["submit", "-j", "job.sh", "sim_1"], "does not have resources"),
-    ],
-)
-def test_usage_errors(ws, fake_sbatch, pipeline, args, message):
-    """Invalid arguments are rejected before anything is run or submitted."""
-    use_pipeline(ws, pipeline)
-    (ws / "job.sh").touch()
-
-    result = invoke(*args)
-
-    assert result.exit_code != 0
-    assert message in result.output
-    assert not fake_sbatch
-    assert not (ws / "sim_1" / "a").exists()
 
 
 def test_teardown(ws):

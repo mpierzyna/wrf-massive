@@ -4,7 +4,6 @@
 
 import logging
 
-import pytest
 from fixtures import simple_simulation
 
 from wrf_massive.base import Resources
@@ -43,73 +42,63 @@ def _make_wrf_stage(sim_dir, resources) -> WRFStage:
     )
 
 
-@pytest.mark.parametrize(
-    "resources, n_cpus",
-    [
-        (Resources(n_tasks=8, cpus_per_task=1, mem_per_cpu="1G"), "8"),
-        (None, None),  # inherit the parent environment (SLURM-driven, or serial fallback)
-    ],
-)
-def test_run_passes_n_cpus_env(monkeypatch, simple_simulation, resources, n_cpus):
+def test_run_passes_n_cpus_env(monkeypatch, simple_simulation):
+    """N_CPUS comes from the resources; without resources the parent environment is inherited (SLURM or serial)."""
     captured = {}
     monkeypatch.setattr(wrf_mod, "run_cmd_logged", lambda *a, env=None, **k: captured.update(env=env))
-    stage = _make_wrf_stage(simple_simulation.sim_dir, resources)
-    stage.run(simple_simulation)
-    if n_cpus is None:
-        assert captured["env"] is None
-    else:
-        assert captured["env"]["N_CPUS"] == n_cpus
+
+    for i, (resources, n_cpus) in enumerate(
+        [(Resources(n_tasks=8, cpus_per_task=1, mem_per_cpu="1G"), "8"), (None, None)]
+    ):
+        simple_simulation.sim_dir = simple_simulation.sim_dir.parent / f"sim_{i}"
+        simple_simulation.sim_dir.mkdir()
+        _make_wrf_stage(simple_simulation.sim_dir, resources).run(simple_simulation)
+        assert (captured["env"] is None) if n_cpus is None else (captured["env"]["N_CPUS"] == n_cpus)
 
 
-@pytest.mark.parametrize(
-    "max_dom, e_we, e_sn, expected",
-    [
+def test_estimate_ncpus_from_namelist(tmp_path):
+    cases = [  # max_dom, e_we, e_sn, expected
         (1, "144", "192", (2, 44)),  # 144/100*192/100 = 2.8, 144/25*192/25 = 44.2
         (1, "144, 301", "192, 301", (2, 44)),  # values beyond max_dom are ignored
         (2, "144, 301", "192, 301", (9, 44)),  # min of the largest, max of the smallest domain
         (1, "50", "50", (1, 4)),  # lower limit is at least 1
-    ],
-)
-def test_estimate_ncpus_from_namelist(tmp_path, max_dom, e_we, e_sn, expected):
-    nml = _write_namelist(tmp_path / "namelist.input", max_dom=max_dom, e_we=e_we, e_sn=e_sn)
-    assert estimate_ncpus_from_namelist(nml) == expected
+    ]
+    for max_dom, e_we, e_sn, expected in cases:
+        nml = _write_namelist(tmp_path / "namelist.input", max_dom=max_dom, e_we=e_we, e_sn=e_sn)
+        assert estimate_ncpus_from_namelist(nml) == expected, (max_dom, e_we, e_sn)
 
 
-@pytest.mark.parametrize(
-    "n_tasks, level, message",
-    [
+def test_n_tasks_checked_against_domain_size(caplog, tmp_path):
+    """The MPI task count is compared with the domain size and logged (never raised), also for resources assigned
+    after construction (e.g. by StageArray); an unreadable grid size (template placeholders) only warns."""
+
+    def mpi_records():
+        records = [r for r in caplog.records if "MPI tasks" in r.message or "could not estimate" in r.message]
+        caplog.clear()
+        return records
+
+    cases = [
         (1, logging.WARNING, "1 MPI tasks are below the recommended range of 2-44 tasks"),
         (4, logging.INFO, "4 MPI tasks are within the recommended range of 2-44 tasks"),
         (64, logging.WARNING, "64 MPI tasks are above the recommended range of 2-44 tasks"),
-    ],
-)
-def test_n_tasks_checked_against_domain_size(caplog, simple_simulation, n_tasks, level, message):
-    resources = Resources(n_tasks=n_tasks, cpus_per_task=1, mem_per_cpu="1G")
+    ]
     with caplog.at_level(logging.INFO, logger="wrf_massive"):
-        _make_wrf_stage(simple_simulation.sim_dir, resources)
+        for n_tasks, level, message in cases:
+            sim_dir = tmp_path / f"tasks_{n_tasks}"
+            sim_dir.mkdir()
+            _make_wrf_stage(sim_dir, Resources(n_tasks=n_tasks, cpus_per_task=1, mem_per_cpu="1G"))
+            [record] = mpi_records()
+            assert record.levelno == level and message in record.message
 
-    [record] = [r for r in caplog.records if "MPI tasks" in r.message]
-    assert record.levelno == level
-    assert message in record.message
-
-
-def test_n_tasks_checked_when_resources_are_assigned(caplog, simple_simulation):
-    """Resources set after construction (e.g. by StageArray or a copy with updated resources) are checked too."""
-    with caplog.at_level(logging.INFO, logger="wrf_massive"):
-        stage = _make_wrf_stage(simple_simulation.sim_dir, None)
-        assert not [r for r in caplog.records if "MPI tasks" in r.message]  # nothing to check without resources
-
+        (tmp_path / "assigned").mkdir()
+        stage = _make_wrf_stage(tmp_path / "assigned", None)
+        assert not mpi_records()  # nothing to check without resources
         stage.resources = Resources(n_tasks=64, cpus_per_task=1, mem_per_cpu="1G")
+        [record] = mpi_records()
+        assert record.levelno == logging.WARNING and "above" in record.message
 
-    [record] = [r for r in caplog.records if "MPI tasks" in r.message]
-    assert record.levelno == logging.WARNING and "above" in record.message
-
-
-def test_n_tasks_check_without_grid_size(caplog, tmp_path):
-    """A namelist whose grid size can't be read (e.g. set via template placeholders) only gives a warning."""
-    nml = _write_namelist(tmp_path / "namelist.tmpl.input", e_we="{{ domains__e_we }}")
-    (tmp_path / "wrf_tmpl").mkdir()
-    with caplog.at_level(logging.INFO, logger="wrf_massive"):
+        nml = _write_namelist(tmp_path / "namelist.tmpl.input", e_we="{{ domains__e_we }}")
+        (tmp_path / "wrf_tmpl").mkdir()
         WRFStage(
             work_dir="3_wrf",
             met_em_dir="2_wps",
@@ -118,4 +107,5 @@ def test_n_tasks_check_without_grid_size(caplog, tmp_path):
             myoutfields_path=None,
             resources=Resources(n_tasks=4, cpus_per_task=1, mem_per_cpu="1G"),
         )
-    assert any("could not estimate" in r.message and r.levelno == logging.WARNING for r in caplog.records)
+        [record] = mpi_records()
+        assert record.levelno == logging.WARNING and "could not estimate" in record.message

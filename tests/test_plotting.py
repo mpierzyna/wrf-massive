@@ -35,7 +35,8 @@ def _make_geo_em(path):
     ds.to_netcdf(path)
 
 
-def test_plot_domain_geo_em_returns_axes(tmp_path):
+def test_domain_geo_em(tmp_path):
+    """The geo_em domain plot, directly and via the CLI (output auto-derived next to the file as <stem>_domains.png)."""
     geo = tmp_path / "geo_em.d01.nc"
     _make_geo_em(geo)
     ax = plot_domain_geo_em(geo, add_coastlines=False)
@@ -43,13 +44,8 @@ def test_plot_domain_geo_em_returns_axes(tmp_path):
     assert "geo_em.d01.nc" in ax.get_title()
     assert "2 km" in ax.get_title()  # DX=2000 m -> 2 km, 7x5 grid
 
-
-def test_cli_domain_geo_em(tmp_path):
-    geo = tmp_path / "geo_em.d01.nc"
-    _make_geo_em(geo)
     result = CliRunner().invoke(main, ["plot", "domain-geo-em", str(geo), "--no-coastlines"])
     assert result.exit_code == 0, result.output
-    # output is auto-derived next to the geo_em file as <stem>_domains.png
     out = tmp_path / "geo_em.d01_domains.png"
     assert out.exists() and out.stat().st_size > 0
 
@@ -112,8 +108,11 @@ def _record_timeline_titles(monkeypatch):
     return titles
 
 
-def test_plot_sim_timeline_bounds():
-    """Bounds are the earliest begin/latest end (warm-up excluded) unless given; one span per sim plus background."""
+def test_plot_sim_timeline():
+    """Bounds are the earliest begin/latest end (warm-up excluded) unless given; one span per sim plus background.
+    No simulations or a start after the end are rejected."""
+    import pytest
+
     sims = [_sim("2020-01-05", "2020-01-10", "a"), _sim("2020-01-01", "2020-01-03", "b")]
     ax = plot_sim_timeline(sims)
     assert len(ax.patches) == 3
@@ -125,34 +124,34 @@ def test_plot_sim_timeline_bounds():
     ax = plot_sim_timeline(sims, start=start, end=end)
     assert ax.get_xlim() == tuple(mdates.date2num([start, end]))
 
-
-def test_plot_sim_timeline_invalid():
-    import pytest
-
     with pytest.raises(ValueError, match="No simulations"):
         plot_sim_timeline([])
     with pytest.raises(ValueError, match="before its end"):
         plot_sim_timeline([_sim("2020-01-01", "2020-01-03", "a")], start=datetime.datetime(2020, 2, 1))
 
 
-def test_cli_sim_timeline_from_dirs(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_cli_sim_timeline(tmp_path, monkeypatch):
+    """From sim dirs (sorted names in the title and file name) or, with -m, from variables of a module holding a
+    Simulation or a list of them, combined into one plot without initialising anything on disk."""
     titles = _record_timeline_titles(monkeypatch)
+    dirs = tmp_path / "dirs"
+    dirs.mkdir()
+    monkeypatch.chdir(dirs)
     for s in [_sim("2020-01-01", "2020-01-03", "sim_a"), _sim("2020-01-05", "2020-01-07", "sim_b")]:
-        s.to_disk(tmp_path)
+        s.to_disk(dirs)
 
     result = CliRunner().invoke(main, ["plot", "sim-timeline", "sim_b/", "sim_a"])
     assert result.exit_code == 0, result.output
     assert "Loaded 2 simulation(s)" in result.output
-    assert (tmp_path / "timeline_sim_a...sim_b.png").stat().st_size > 0
+    assert (dirs / "timeline_sim_a...sim_b.png").stat().st_size > 0
     assert titles[-1] == "sim_a...sim_b (n=2 sims, 4 days)"  # sorted dir names
 
     result = CliRunner().invoke(main, ["plot", "sim-timeline", "sim_a"])
     assert result.exit_code == 0, result.output
     assert titles[-1] == "sim_a (n=1 sims, 2 days)"
-    assert (tmp_path / "timeline_sim_a.png").exists()
+    assert (dirs / "timeline_sim_a.png").exists()
 
-    (tmp_path / "not_a_sim").mkdir()
+    (dirs / "not_a_sim").mkdir()
     result = CliRunner().invoke(main, ["plot", "sim-timeline", "sim_a", "not_a_sim"])
     assert result.exit_code != 0
     assert "no simulation.yaml" in result.output
@@ -161,20 +160,18 @@ def test_cli_sim_timeline_from_dirs(tmp_path, monkeypatch):
     assert result.exit_code != 0
     assert "simulation directory" in result.output
 
-
-def test_cli_sim_timeline_from_module(tmp_path, monkeypatch):
-    """With -m, TARGETS are variable names (a Simulation or list of them) whose sims are combined into one plot."""
-    monkeypatch.chdir(tmp_path)
-    titles = _record_timeline_titles(monkeypatch)
-    (tmp_path / "sims_timeline_test.py").write_text(SIMS_MODULE)
+    module = tmp_path / "module"
+    module.mkdir()
+    monkeypatch.chdir(module)
+    (module / "sims_timeline_test.py").write_text(SIMS_MODULE)
     args = ["plot", "sim-timeline", "-m", "sims_timeline_test.py"]
 
     result = CliRunner().invoke(main, [*args, "sim_a", "sims_b", "--start", "2019-12-25"])
     assert result.exit_code == 0, result.output
     assert "Found 1 simulation(s) in variable 'sim_a'" in result.output
     assert "Found 2 simulation(s) in variable 'sims_b'" in result.output
-    assert (tmp_path / "timeline_sims_timeline_test_sim_a_sims_b.png").stat().st_size > 0
-    assert not (tmp_path / "sim_a").exists()  # nothing is initialized on disk
+    assert (module / "timeline_sims_timeline_test_sim_a_sims_b.png").stat().st_size > 0
+    assert not (module / "sim_a").exists()  # nothing is initialized on disk
     assert titles[-1] == "sims_timeline_test.py: sim_a, sims_b (n=3 sims, 9.5 days)"
 
     result = CliRunner().invoke(main, [*args, "missing"])

@@ -50,7 +50,9 @@ def configure_paths(root: pathlib.Path, tmp_path: pathlib.Path):
     (root / "env_local.yaml").write_text(yaml.safe_dump(env))
 
 
-def test_init_creates_template_files(new_ws):
+def test_init(new_ws, tmp_path):
+    """`init` writes the template with env.yaml linked to the (non-gitignored) env file, and refuses to overwrite
+    existing files without --force. An existing env.yaml (e.g. a link to another machine's env file) counts too."""
     assert {p.name for p in new_ws.iterdir()} == EXPECTED_FILES
     assert os.readlink(new_ws / "env.yaml") == "env_local.yaml"  # the link is gitignored, the env file is not
     assert "/env.yaml" in (new_ws / ".gitignore").read_text().splitlines()
@@ -58,10 +60,7 @@ def test_init_creates_template_files(new_ws):
     assert env["pipeline"] == "p_default"
     assert env["log_level"] == "info"
 
-
-def test_init_refuses_to_overwrite_without_force(new_ws):
     (new_ws / "pipeline.py").write_text("# mine")
-
     result = invoke("init", new_ws)
     assert result.exit_code != 0
     assert "Refusing to overwrite" in result.output
@@ -72,41 +71,30 @@ def test_init_refuses_to_overwrite_without_force(new_ws):
     assert (new_ws / "pipeline.py").read_text() != "# mine"
     assert os.readlink(new_ws / "env.yaml") == "env_local.yaml"
 
-
-def test_init_refuses_to_replace_env_link(tmp_path):
-    """An existing env.yaml (e.g. a link to another machine's env file) is not replaced either."""
-    root = tmp_path / "ws"
+    root = tmp_path / "ws_with_link"
     root.mkdir()
     (root / "env.yaml").symlink_to("env_hpc.yaml")  # dangling: still counts as existing
-
     result = invoke("init", root)
-
     assert result.exit_code != 0
     assert "env.yaml" in result.output
     assert os.readlink(root / "env.yaml") == "env_hpc.yaml"
 
 
 def test_template_workspace_loads(new_ws, tmp_path):
-    """The template's simulations and pipeline import and validate once the env paths are set."""
-    configure_paths(new_ws, tmp_path)
+    """Before the env paths are set, commands fail with a pointer to the env file instead of a traceback; once they
+    are set, the template's simulations and pipeline import and validate."""
     os.chdir(new_ws)
-
-    result = invoke("init-sims", "simulations.py", "sim_test")
+    result = invoke("init-sims", "simulations.py", "sim_test")  # needs no pipeline
     assert result.exit_code == 0, result.output
     assert (new_ws / "test_1" / "simulation.yaml").exists()
 
-    result = invoke("--debug", "submit", "test_1")  # job script from `job_file` in env.yaml
-    assert result.exit_code == 0, result.output
-    assert result.output.count("Dry run") == 5  # cerra, era5, wps, wrf, sim_done
-
-
-def test_template_placeholder_paths_give_clear_error(new_ws):
-    """Before the env paths are set, commands fail with a pointer to the env file instead of a traceback."""
-    os.chdir(new_ws)
-    assert invoke("init-sims", "simulations.py", "sim_test").exit_code == 0  # needs no pipeline
-
     result = invoke("run", "test_1")
-
     assert result.exit_code != 0
     assert "Failed to load" in result.output
     assert "env.yaml" in result.output
+
+    configure_paths(new_ws, tmp_path)
+    os.chdir(new_ws)
+    result = invoke("--debug", "submit", "test_1")  # job script from `job_file` in env.yaml
+    assert result.exit_code == 0, result.output
+    assert result.output.count("Dry run") == 5  # cerra, era5, wps, wrf, sim_done
