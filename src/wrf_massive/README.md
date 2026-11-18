@@ -276,11 +276,13 @@ wrf-massive teardown --stages wrf test_1         # move results back from tempor
 wrf-massive submit test_1                        # submit each stage as its own SLURM job (job_file of env file)
 wrf-massive submit -j other.job.sh test_1       # ... with another job script
 wrf-massive --debug submit test_1                # print the sbatch commands instead of submitting
+wrf-massive submit --force-setup -s wrf test_1   # let the jobs rerun the setup of their stages
 ```
 
 `init-sims` creates the simulation dirs in the workspace root unless `--root` is given. `submit` calls the job script
 with the stage name and simulation dir as arguments, so the script should run `wrf-massive run --stages=$1 $2`. The
-jobs use the same env file as the `submit` call.
+jobs use the same env file as the `submit` call. With `--force-setup`, the jobs rerun the setup of their stage
+like `run --force-setup`, e.g. after changing a namelist template.
 
 ### Plotting domains
 `wrf-massive plot` plots WPS domains, either from the namelist before running geogrid or from the geogrid output.

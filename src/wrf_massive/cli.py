@@ -142,10 +142,11 @@ def _submit_stage_slurm(
     sim_dir: pathlib.Path,
     stage_name: str,
     jobfile: pathlib.Path,
+    job_env: dict[str, str],
     dep_job_id: int | None = None,
     dry_run: bool = False,
 ) -> int:
-    """Submit a single stage of a simulation to SLURM."""
+    """Submit a single stage of a simulation to SLURM, with `job_env` added to the environment the job inherits."""
     stage = p[stage_name]
 
     # Make slurm output dir
@@ -192,12 +193,12 @@ def _submit_stage_slurm(
     # Submit job. Arguments after the jobfile are passed to it: stage name and sim dir for `wrf-massive run`.
     cmd = ["sbatch", *sbatch_args, str(jobfile), stage_name, str(sim_dir)]
 
-    # sbatch exports the submitting environment to the job by default, so `wrf-massive run` inside the job can check
-    # that env.yaml is still the one the job was submitted with.
-    env = {**os.environ, ENV_HASH_ENVVAR: ws.env_hash}
+    # sbatch exports the submitting environment to the job by default.
+    env = {**os.environ, **job_env}
 
     if dry_run:
-        click.echo(f"Dry run, not submitting: {ENV_HASH_ENVVAR}={ws.env_hash} {' '.join(cmd)}")
+        env_str = " ".join(f"{k}={v}" for k, v in job_env.items())
+        click.echo(f"Dry run, not submitting: {env_str} {' '.join(cmd)}")
         return random.randint(0, 1000)
 
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ws.root)
@@ -371,14 +372,30 @@ def teardown(state: CliState, stages: str | None, all_files: bool, sim_dirs: Tup
     help="SLURM job script. Overrides `job_file` of the env file.",
 )
 @click.option("--dep-job", "-d", type=int, required=False, default=None, help="Job ID the first stage depends on.")
+@click.option(
+    "--force-setup",
+    is_flag=True,
+    default=False,
+    help="Make the jobs rerun the setup of the submitted stages.",
+    envvar="FORCE_SETUP",
+)
 @click.argument("sim_dirs", type=click.Path(exists=True, file_okay=False), nargs=-1)
 @pass_state
-def submit(state: CliState, stages: str | None, jobfile: str | None, dep_job: int | None, sim_dirs: Tuple[str, ...]):
+def submit(
+    state: CliState,
+    stages: str | None,
+    jobfile: str | None,
+    dep_job: int | None,
+    force_setup: bool,
+    sim_dirs: Tuple[str, ...],
+):
     """Submit stages of simulations in SIM_DIRS to SLURM, one job per stage.
 
     Stages of a simulation depend on each other; `--dep-job` additionally makes the first stage of every simulation
     wait for another job. The job script is `job_file` of the env file, unless `--jobfile` is given. It is called with
-    the stage name and simulation dir as arguments and should run `wrf-massive run --stages=$1 $2`.
+    the stage name and simulation dir as arguments and should run `wrf-massive run --stages=$1 $2`. With
+    `--force-setup`, the jobs get `FORCE_SETUP=1` in their environment, so that `wrf-massive run` reruns the setup of
+    the stage like `run --force-setup` (a `.done` marker still skips the stage).
     """
     sim_dirs = _require_sim_dirs(sim_dirs)
     jobfile = _abspath(jobfile) if jobfile is not None else None
@@ -392,6 +409,12 @@ def submit(state: CliState, stages: str | None, jobfile: str | None, dep_job: in
             raise click.UsageError(f"Job script '{jobfile}' (`job_file` in '{ws.env_file}') does not exist.")
     stages = _get_stages(p, stages, require_resources=True)
 
+    # Passed to `wrf-massive run` in the jobs through their environment, so they work with any job script: the env
+    # hash lets the job check that env.yaml is still the one it was submitted with, FORCE_SETUP is `run --force-setup`.
+    job_env = {ENV_HASH_ENVVAR: state.workspace.env_hash}
+    if force_setup:
+        job_env["FORCE_SETUP"] = "1"
+
     # Submit each stage of each simulation with dependency on previous stage
     for sim_dir in sim_dirs:
         prev_job_id = dep_job
@@ -403,6 +426,7 @@ def submit(state: CliState, stages: str | None, jobfile: str | None, dep_job: in
                 sim_dir=sim_dir,
                 stage_name=stage_name,
                 jobfile=jobfile,
+                job_env=job_env,
                 dep_job_id=prev_job_id,
                 dry_run=state.debug,
             )

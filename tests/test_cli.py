@@ -269,6 +269,29 @@ def test_submit(ws, fake_sbatch):
     assert logging.getLogger("wrf_massive").level == logging.DEBUG
 
 
+def test_submit_force_setup(ws, fake_sbatch):
+    """With `--force-setup`, the submitted jobs rerun the setup of their stage, without it they don't."""
+    (ws / "job.sh").touch()
+    assert invoke("run", "-s", "a", "sim_1").exit_code == 0  # set up and done
+
+    def run_job(*submit_args):
+        assert invoke("submit", "-s", "a", "-j", "job.sh", *submit_args, "sim_1").exit_code == 0
+        cmd, kwargs = fake_sbatch[-1]
+        env = {k: v for k, v in kwargs["env"].items() if k not in os.environ}  # set by `submit` for the job
+        return invoke("run", f"--stages={cmd[-2]}", cmd[-1], env=env)  # what the job script runs
+
+    result = run_job("--force-setup")
+    assert result.exit_code == 0, result.output
+    assert "Setting up Stage A" in result.output
+    result = run_job()
+    assert result.exit_code == 0, result.output
+    assert "Setting up Stage A" not in result.output
+
+    result = invoke("--debug", "submit", "-s", "a", "-j", "job.sh", "--force-setup", "sim_1")
+    assert result.exit_code == 0, result.output
+    assert "FORCE_SETUP=1" in result.output
+
+
 def test_teardown(ws):
     """`-s` tears down only the selected stages; `--all` ignores the stages' teardown globs."""
     use_pipeline(ws, "p_tmp")

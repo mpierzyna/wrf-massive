@@ -88,7 +88,9 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   bytes read at load); sbatch exports the environment by default. In the job, `CliState.workspace` calls
   `check_env_unchanged` with that variable before activating, so a job fails if env.yaml was edited or relinked since
   submission (no check if the variable is unset, e.g. local runs or `#SBATCH --export=NONE`). `--debug` prints the
-  command instead (dry run) and sets the `wrf_massive` logger to DEBUG.
+  command instead (dry run) and sets the `wrf_massive` logger to DEBUG. `--force-setup` adds `FORCE_SETUP=1`
+  (the envvar of `run --force-setup`) to the job env, so it works with any job script. Both options read the same
+  envvar, so an exported `FORCE_SETUP` affects `submit` and its jobs alike.
 - **Monitoring** (`monitor.py`, `monitor.sh`): with `$WRF_MASSIVE_MONITOR=<s>`, `run` wraps each stage (one
   `p.run(s, stages=[name])` per stage) in `monitor()`, which starts the bundled `monitor.sh` as a child process (so
   it sits in the SLURM job's cgroup), waits for its first sample (its TERM trap is set by then) and terminates it
