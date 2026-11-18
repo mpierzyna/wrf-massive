@@ -177,6 +177,14 @@ def env_hash(ws: pathlib.Path) -> str:
     return hashlib.sha256((ws / "env.yaml").read_bytes()).hexdigest()
 
 
+def exported_env(cmd: list[str]) -> dict[str, str]:
+    """The variables an sbatch command passes to the job via `--export=ALL,K=V,...`."""
+    (export,) = [a for a in cmd if a.startswith("--export=")]
+    names = export.removeprefix("--export=").split(",")
+    assert names[0] == "ALL"  # the submitting environment is still exported
+    return dict(n.split("=", 1) for n in names[1:])
+
+
 def test_errors_are_reported_before_anything_runs(ws, fake_sbatch):
     """Invalid env files, pipelines and arguments are rejected with a clear message before anything is run or
     submitted."""
@@ -244,7 +252,8 @@ def test_submit(ws, fake_sbatch):
     assert result.exit_code == 0, result.output
     assert len(fake_sbatch) == 2  # stages a, b
     (cmd_a, kwargs_a), (cmd_b, _) = fake_sbatch
-    assert kwargs_a["env"][ENV_HASH_ENVVAR] == env_hash(ws)
+    assert exported_env(cmd_a) == {ENV_HASH_ENVVAR: env_hash(ws)}
+    assert "env" not in kwargs_a  # passed via --export, not via the sbatch process env (dropped on some clusters)
     assert kwargs_a["cwd"] == ws
     assert cmd_a[-3:] == [str(ws / "job.sh"), "a", str(ws / "sim_1")]
     assert "--nodes=1" in cmd_a  # default
@@ -276,8 +285,8 @@ def test_submit_force_setup(ws, fake_sbatch):
 
     def run_job(*submit_args):
         assert invoke("submit", "-s", "a", "-j", "job.sh", *submit_args, "sim_1").exit_code == 0
-        cmd, kwargs = fake_sbatch[-1]
-        env = {k: v for k, v in kwargs["env"].items() if k not in os.environ}  # set by `submit` for the job
+        cmd, _ = fake_sbatch[-1]
+        env = exported_env(cmd)  # set by `submit` for the job
         return invoke("run", f"--stages={cmd[-2]}", cmd[-1], env=env)  # what the job script runs
 
     result = run_job("--force-setup")

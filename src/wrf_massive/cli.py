@@ -146,7 +146,7 @@ def _submit_stage_slurm(
     dep_job_id: int | None = None,
     dry_run: bool = False,
 ) -> int:
-    """Submit a single stage of a simulation to SLURM, with `job_env` added to the environment the job inherits."""
+    """Submit a single stage of a simulation to SLURM, passing `job_env` to the job via `--export=ALL,...`."""
     stage = p[stage_name]
 
     # Make slurm output dir
@@ -190,18 +190,25 @@ def _submit_stage_slurm(
     if dep_conditions:
         sbatch_args.append(f"--dependency={','.join(dep_conditions)}")
 
+    # Pass `job_env` explicitly with `--export`: some clusters (e.g. Snellius) drop variables that are only set in the
+    # environment of the sbatch process, even with the default `--export=ALL`. sbatch splits the list on commas, so
+    # values must not contain any.
+    if job_env:
+        for k, v in job_env.items():
+            if "," in k or "," in v:
+                raise ValueError(
+                    f"Job environment variable {k}={v!r} contains a comma, which sbatch --export cannot pass."
+                )
+        sbatch_args.append("--export=" + ",".join(["ALL", *(f"{k}={v}" for k, v in job_env.items())]))
+
     # Submit job. Arguments after the jobfile are passed to it: stage name and sim dir for `wrf-massive run`.
     cmd = ["sbatch", *sbatch_args, str(jobfile), stage_name, str(sim_dir)]
 
-    # sbatch exports the submitting environment to the job by default.
-    env = {**os.environ, **job_env}
-
     if dry_run:
-        env_str = " ".join(f"{k}={v}" for k, v in job_env.items())
-        click.echo(f"Dry run, not submitting: {env_str} {' '.join(cmd)}")
+        click.echo(f"Dry run, not submitting: {' '.join(cmd)}")
         return random.randint(0, 1000)
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ws.root)
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=ws.root)
     if proc.returncode != 0:
         logger.error(f"Failed to submit job. Return code: {proc.returncode}. {proc.stderr}")
         raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, proc.stderr)

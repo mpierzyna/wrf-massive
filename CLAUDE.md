@@ -84,10 +84,13 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   keeps `--help`, `init` and the `plot` group working outside a workspace. The `plot` commands import `plotting`
   inside the command (xarray/matplotlib add ~0.3 s to every CLI start otherwise). Sim dirs are therefore absolute inside commands.
 - **`submit`** takes the job script from `--jobfile`, else from the env file's `job_file` (`Workspace.job_file`,
-  relative to the root; a missing one is a `UsageError`). It runs `sbatch` with `cwd=root` and `env[WRF_MASSIVE_ENV_SHA256] = Workspace.env_hash` (SHA-256 of the env.yaml
-  bytes read at load); sbatch exports the environment by default. In the job, `CliState.workspace` calls
+  relative to the root; a missing one is a `UsageError`). It runs `sbatch` with `cwd=root` and passes the job variables (`job_env`) explicitly as
+  `--export=ALL,WRF_MASSIVE_ENV_SHA256=<Workspace.env_hash>[,FORCE_SETUP=1]` (SHA-256 of the env.yaml bytes read at
+  load). Setting them only in the sbatch process env is not enough: some clusters (Snellius) drop such variables
+  despite `SLURM_EXPORT_ENV=ALL`. The command-line `--export` also overrides a job script's `#SBATCH --export`
+  (values must not contain commas; `submit` raises otherwise). In the job, `CliState.workspace` calls
   `check_env_unchanged` with that variable before activating, so a job fails if env.yaml was edited or relinked since
-  submission (no check if the variable is unset, e.g. local runs or `#SBATCH --export=NONE`). `--debug` prints the
+  submission (no check if the variable is unset, e.g. local runs). `--debug` prints the
   command instead (dry run) and sets the `wrf_massive` logger to DEBUG. `--force-setup` adds `FORCE_SETUP=1`
   (the envvar of `run --force-setup`) to the job env, so it works with any job script. Both options read the same
   envvar, so an exported `FORCE_SETUP` affects `submit` and its jobs alike.
