@@ -214,6 +214,9 @@ Notes:
   (`e_we`/`e_sn`, following the [WRF forum](https://forum.mmm.ucar.edu/threads/choosing-an-appropriate-number-of-processors.5082/)):
   the range is logged as info, and a warning is logged if `n_tasks` is below or above it.
 - The postprocessing stages need `wrf-python`, which is installed with the `postproc` extra of wrf-massive.
+- Postprocessing reads, processes and writes each `wrfout` file one time step (frame) at a time, appending to the
+  output file, so the memory of a worker is set by the size of one frame, not by the number of frames per file.
+  Postproc fns therefore see a single frame and must not combine time steps.
 
 See `stages/README.md` for a short overview of the four pipeline steps.
 

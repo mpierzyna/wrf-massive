@@ -14,6 +14,7 @@ import re
 import shutil
 from typing import Callable, Dict, List, Self
 
+import h5netcdf
 import numpy as np
 import pydantic
 import xarray as xr
@@ -22,7 +23,7 @@ from wrf_massive.base import Simulation, Stage, TPath, TPathExists
 from wrf_massive.log import get_logger
 from wrf_massive.stages.postproc.iofields import parse_myoutfields
 from wrf_massive.stages.postproc.variables import REQUIRED_WRF_FIELDS, TVarList, var_name, wrf_fields_of
-from wrf_massive.stages.postproc.wrfout import load_wrfout
+from wrf_massive.stages.postproc.wrfout import load_wrfout, n_frames
 
 logger = get_logger("stages.postproc")
 
@@ -30,7 +31,11 @@ STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
 
 
 class PostProcFn(pydantic.BaseModel):
-    """Post-processing function with metadata about required variables and output variable names."""
+    """Post-processing function with metadata about required variables and output variable names.
+
+    Files are processed one time step (frame) at a time, so `fn` sees a dataset with a `time` dimension of length 1
+    and must not need other time steps (e.g. no time derivatives or averages).
+    """
 
     fn: Callable[[xr.Dataset], Dict[str, xr.DataArray]]
     returns: List[str]
@@ -71,7 +76,6 @@ class PostProcStage(Stage):
     n_workers: int | None = pydantic.Field(default=None, gt=0)
     file_suffix: str = "proc"  # appended to wrfout filenames to indicate post-processed files
     discard_warmup: bool = True  # whether to discard wrfout files from warmup period (default: True)
-    single_precision: bool = True  # cast float64 data variables to float32 before saving
 
     @pydantic.model_validator(mode="after")
     def ensure_resources_for_parallel(self) -> Self:
@@ -271,9 +275,29 @@ class PostProcStage(Stage):
             logger.info(f"Output file {f_out} already exists. Skipping.")
             return
 
-        # Load wrfout file
-        logger.info(f"Post-processing {f.name}...")
-        ds = load_wrfout(f, vars_to_extract=self.vars_to_read())
+        # Process one frame at a time, so memory is bounded by the size of a single frame, not by the number of
+        # frames per file. Write to temp file first and rename, so a killed job never leaves a partial file behind
+        # that looks complete to the existence check above and to `is_done`.
+        n = n_frames(f)
+        logger.info(f"Post-processing {f.name} ({n} frame(s))...")
+        logger.info(f"-> Saving to {f_out}{' (compressed)' if self.compression else ''}...")
+        f_tmp = f_out.with_name(f".{f_out.name}.tmp")  # leading dot keeps it out of the output globs
+        try:
+            for i in range(n):
+                ds = self._process_frame(f, i)
+                if i == 0:
+                    logger.info(f"-> Expected filesize: {n * ds.nbytes / 1e9:.1f} GB")
+                    ds.to_netcdf(f_tmp, engine="h5netcdf", encoding=self._encoding(ds), unlimited_dims=["time"])
+                else:
+                    _append_frame(f_tmp, ds, i)
+            f_tmp.replace(f_out)  # atomic within the same directory
+        finally:
+            f_tmp.unlink(missing_ok=True)
+
+    def _process_frame(self, f: pathlib.Path, timeidx: int | None) -> xr.Dataset:
+        """Read frame `timeidx` (None: all frames at once) of wrfout file `f`, apply the postproc fns and keep only
+        the stored variables."""
+        ds = load_wrfout(f, vars_to_extract=self.vars_to_read(), timeidx=timeidx)
 
         # Apply postproc functions
         for fn in self.postproc_fns:
@@ -287,31 +311,28 @@ class PostProcStage(Stage):
         keep += [name for fn in self.postproc_fns for name in fn.returns]
         ds = ds[list(dict.fromkeys(keep))]
 
-        # wrf-python returns some computed variables (z, w, u_met, v_met, slp) as float64, which doubles their
-        # size on disk and in RAM without adding information: WRF itself is single precision.
-        if self.single_precision:
-            for v in ds.data_vars:
-                if ds[v].dtype == np.float64:
-                    ds[v] = ds[v].astype(np.float32)
+        # Variables read are float32 already (see `read_var`); this catches postproc fn results computed in float64.
+        for v in ds.data_vars:
+            if ds[v].dtype == np.float64:
+                ds[v] = ds[v].astype(np.float32)
 
-        # Log diagnostics
         logger.debug(ds.sizes)
         logger.debug(ds.dtypes)
-        logger.info(f"-> Processing done. Expected filesize: {ds.nbytes / 1e9:.1f} GB")
+        return ds
 
-        # Save. Write to temp file first and rename, so a killed job never leaves a partial file behind that
-        # looks complete to the existence check above and to `is_done`.
-        logger.info(f"-> Saving to {f_out}{' (compressed)' if self.compression else ''}...")
-        encoding = {}
-        if self.compression:
-            encoding = {var: {"zlib": True} for var in ds.data_vars}
-
-        f_tmp = f_out.with_name(f".{f_out.name}.tmp")  # leading dot keeps it out of the output globs
-        try:
-            ds.to_netcdf(f_tmp, engine="h5netcdf", encoding=encoding)
-            f_tmp.replace(f_out)  # atomic within the same directory
-        finally:
-            f_tmp.unlink(missing_ok=True)
+    def _encoding(self, ds: xr.Dataset) -> dict:
+        """netCDF encoding for the first frame, which fixes it for the frames appended to the file later."""
+        # Explicit time units with integer seconds, so the appended frames can be encoded the same way.
+        t0 = np.datetime_as_string(ds["time"].values[0], unit="s").replace("T", " ")
+        encoding = {"time": {"units": f"seconds since {t0}", "dtype": "int64"}}
+        for v in ds.data_vars:
+            enc = {}
+            if "time" in ds[v].dims:  # one chunk per frame: appending touches only new chunks
+                enc["chunksizes"] = tuple(1 if d == "time" else ds.sizes[d] for d in ds[v].dims)
+            if self.compression:
+                enc["zlib"] = True
+            encoding[v] = enc
+        return encoding
 
     def is_done(self, s: Simulation) -> bool:
         try:
@@ -321,3 +342,18 @@ class PostProcStage(Stage):
             return False
         n_done = len(list(self.get_work_dir(s).glob(f"wrfout_*{self.file_suffix}.nc")))
         return n_done == n_expected
+
+
+def _append_frame(f: pathlib.Path, ds: xr.Dataset, timeidx: int):
+    """Write the single-frame dataset `ds` as frame `timeidx` into `f`, written for frame 0 by `to_netcdf`."""
+    with h5netcdf.File(f, "a") as nc:
+        nc.resize_dimension("time", timeidx + 1)
+        time = nc.variables["time"]
+        t0 = np.datetime64(time.attrs["units"].removeprefix("seconds since "), "s")
+        time[timeidx] = (ds["time"].values[0] - t0) // np.timedelta64(1, "s")
+        for v in ds.data_vars:
+            if "time" not in ds[v].dims:
+                continue  # time-invariant: written with frame 0
+            var = nc.variables[v]
+            assert var.dimensions == ds[v].dims and ds[v].dims[0] == "time", f"{v}: {var.dimensions}, {ds[v].dims}"
+            var[timeidx, ...] = ds[v].values[0]

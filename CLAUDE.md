@@ -235,6 +235,15 @@ postproc).
    `run_parallel=True` uses a process pool of `n_workers` (default None = `resources.cpus_total`); `n_workers` may
    only be set with `run_parallel` and must not exceed `cpus_total` (checked at init). Setting it lower trades CPUs
    for memory per worker on clusters with a fixed memory per CPU or a minimum allocation.
+   `_run_single` works frame by frame to bound memory: `_process_frame(f, i)` reads frame `i`
+   (`load_wrfout(..., timeidx=i)`; `read_var` re-adds the `Time` dim wrf-python drops for a single frame), applies the
+   postproc fns (so they must be time-local), keeps the stored vars and casts float64 fn results to float32
+   (`read_var` always returns float32: wrf-python's float64 is a double-precision computation artefact; there is no
+   option for float64 output). Frame 0 is written with
+   `to_netcdf(unlimited_dims=["time"])` and an encoding from `_encoding` (time as int64 `seconds since <t0>`, one
+   chunk per frame, zlib if `compression`); later frames are appended in place by `_append_frame` (h5netcdf
+   `resize_dimension`). `timeidx=None` processes all frames at once; `test_framewise_output_matches_whole_file`
+   checks that both give identical files.
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
 `StageArray` runs several substages inside one job (one SLURM allocation). It overrides `tmp_work_dir` only:

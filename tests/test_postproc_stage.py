@@ -90,7 +90,7 @@ def _simulation(fixture_dir: pathlib.Path = WRFOUT_DIR) -> Simulation:
 def _run(work_dir: pathlib.Path, fixture_dir: pathlib.Path = WRFOUT_DIR, stage_cls=Cn2PostProcStage, **kwargs):
     """Run a postproc stage over a fixture into `work_dir`; return the stage and its outputs."""
     work_dir.mkdir(parents=True, exist_ok=True)
-    pp = stage_cls(work_dir=work_dir, wrfout_dir=fixture_dir.name, domain=1, compression=False, **kwargs)
+    pp = stage_cls(work_dir=work_dir, wrfout_dir=fixture_dir.name, domain=1, **({"compression": False} | kwargs))
     pp.run(_simulation(fixture_dir))
     return pp, sorted(work_dir.glob(f"*{pp.file_suffix}.nc"))
 
@@ -299,6 +299,22 @@ def test_parallel_run(tmp_path):
         assert {"w", "u_met", "v_met", "ct2", "cn2"} <= set(ds.data_vars) and "u_v" not in ds.dims
 
 
+def test_framewise_output_matches_whole_file(tmp_path):
+    """Files are processed and written one frame at a time; the result equals processing all frames at once."""
+    kwargs = dict(extract_vars=["w", "u_met", "v_met", "p", "HGT", ("EL_PBL", "bottom_top_stag")], resources=_RESOURCES)
+    for compression in (False, True):
+        pp, outputs = _run(tmp_path / str(compression), compression=compression, **kwargs)
+        inputs = pp.get_inputs(_simulation(WRFOUT_DIR))
+        assert len(outputs) == len(inputs) > 0
+        for f_in, f_out in zip(inputs, outputs):
+            whole = pp._process_frame(f_in, None)
+            assert whole.sizes["time"] > 1  # the fixtures must exercise appending
+            f_whole = tmp_path / f"whole_{f_out.name}"  # written in one go, as before frame-wise processing
+            whole.to_netcdf(f_whole, engine="h5netcdf")
+            xr.testing.assert_identical(xr.open_dataset(f_out), xr.open_dataset(f_whole))
+            assert not list(f_out.parent.glob(".*.tmp"))  # temp file renamed
+
+
 def test_n_workers(tmp_path, monkeypatch):
     """`n_workers` caps the worker pool below the allocated CPUs; unset, all allocated CPUs are used."""
     import concurrent.futures
@@ -319,11 +335,9 @@ def test_n_workers(tmp_path, monkeypatch):
 
 
 def test_written_outputs(tmp_path):
-    """Outputs are float32 by default (wrf-python returns z/w/u_met/v_met/slp as float64) and read back without
-    fill-value warnings."""
-    kwargs = dict(extract_vars=["w", "u_met", "p", "tk", "slp"])
-    _, (f_single, *_) = _run(tmp_path / "single", **kwargs)
-    _, (f_double, *_) = _run(tmp_path / "double", single_precision=False, **kwargs)
+    """Outputs are float32 (wrf-python returns z/w/u_met/v_met/slp as float64) and read back without fill-value
+    warnings."""
+    _, (f_single, *_) = _run(tmp_path, extract_vars=["w", "u_met", "p", "tk", "slp"])
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -332,8 +346,8 @@ def test_written_outputs(tmp_path):
     assert not serialization, [str(w.message) for w in serialization]
 
     assert not [v for v in ds.data_vars if ds[v].dtype == np.float64]
-    ds_double = xr.open_dataset(f_double)
-    assert ds_double["z"].dtype == ds_double["w"].dtype == np.float64  # unchanged wrf-python dtypes
+    wrf_dtypes = load_wrfout(_first_file(WRFOUT_DIR), ["z", "w", "u_met", "slp", "tk"], timeidx=0)
+    assert all(wrf_dtypes[v].dtype == np.float32 for v in wrf_dtypes.data_vars)  # cast right after reading
 
     # Cn2 spans very small magnitudes (1e-22..1e-13), far above the float32 subnormal limit -> no underflow
     assert ds["cn2"].dtype == np.float32

@@ -56,11 +56,18 @@ def normalize_fill_values(v_data: xr.DataArray) -> xr.DataArray:
     return v_data
 
 
-def read_var(wrfin: netCDF4.Dataset, name: str, destagger_dim: str | None = None) -> xr.DataArray:
-    """Read variable `name` for all time steps from an open wrfout file and make it storable.
+def read_var(
+    wrfin: netCDF4.Dataset,
+    name: str,
+    destagger_dim: str | None = None,
+    timeidx: int | None = None,
+) -> xr.DataArray:
+    """Read variable `name` from an open wrfout file and make it storable.
 
     A WRF field (ALL-CAPS) is looked up case-insensitively in the file. A derived variable is computed by wrf-python as
-    defined in `DERIVED_VARS`. Either way, the result is returned under `name`.
+    defined in `DERIVED_VARS`. Either way, the result is returned under `name`. `timeidx=None` reads all time steps
+    (heavy on memory), an int only that one; the result has a `Time` dimension either way (of length 1 for an int).
+    Floating point results are always float32.
     """
     if is_wrf_field(name):
         getvar_name = next((v for v in wrfin.variables if v.upper() == name), name)
@@ -68,11 +75,17 @@ def read_var(wrfin: netCDF4.Dataset, name: str, destagger_dim: str | None = None
     else:
         getvar_name, _, index = DERIVED_VARS[name]
 
-    # Get variable for all timesteps (ATTENTION! This is heavy on memory!)
-    logger.info(f"Reading {name}... ")
-    v_data = wrf.getvar(wrfin, getvar_name, timeidx=wrf.ALL_TIMES)
+    logger.info(f"Reading {name}{'' if timeidx is None else f' (frame {timeidx})'}... ")
+    v_data = wrf.getvar(wrfin, getvar_name, timeidx=wrf.ALL_TIMES if timeidx is None else timeidx)
     if index is not None:  # e.g. u_met is uvmet[0]; drop=True leaves no scalar coordinate of the stacking dimension
         v_data = v_data.isel({v_data.dims[0]: index}, drop=True)
+    if timeidx is not None:  # a single frame comes without the `Time` dimension, only with a scalar `Time` coord
+        v_data = v_data.expand_dims("Time")
+
+    # WRF writes float32. wrf-python returns some derived variables (z, w, u_met, v_met, slp, ...) as float64 only
+    # because it computes them in double precision, which doubles their memory without adding information.
+    if v_data.dtype == np.float64:
+        v_data = v_data.astype(np.float32)
 
     if destagger_dim:
         destagger_dim_ind = v_data.dims.index(destagger_dim)
@@ -86,15 +99,25 @@ def read_var(wrfin: netCDF4.Dataset, name: str, destagger_dim: str | None = None
     return v_data.rename(name)
 
 
-def load_wrfout(f: pathlib.Path | str, vars_to_extract: TVarList) -> xr.Dataset:
-    """Load the given variables (WRF fields or wrf-python derived variables) from a wrfout file into a dataset."""
+def n_frames(f: pathlib.Path | str) -> int:
+    """Number of time steps (frames) in a wrfout file."""
+    with netCDF4.Dataset(f) as wrf_file:
+        return len(wrf_file.dimensions["Time"])
+
+
+def load_wrfout(f: pathlib.Path | str, vars_to_extract: TVarList, timeidx: int | None = None) -> xr.Dataset:
+    """Load the given variables (WRF fields or wrf-python derived variables) from a wrfout file into a dataset.
+
+    `timeidx=None` loads all time steps, an int only that frame (with a `time` dimension of length 1).
+    """
     # wrf-python reads eagerly, so all extracted data stays valid once the file is closed again.
     with netCDF4.Dataset(f) as wrf_file:
         res = {}
         for v in vars_to_extract:
             name = var_name(v)
             assert name not in res, f"Variable {name} already in results!"  # this shouldn't happen
-            res[name] = read_var(wrf_file, name, destagger_dim=v[1] if isinstance(v, tuple) else None)
+            destagger_dim = v[1] if isinstance(v, tuple) else None
+            res[name] = read_var(wrf_file, name, destagger_dim=destagger_dim, timeidx=timeidx)
             logger.info("Done!")
 
         # Collect everything into a single dataset
