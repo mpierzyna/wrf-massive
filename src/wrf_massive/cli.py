@@ -179,6 +179,8 @@ def _submit_stage_slurm(
     if stage.resources.walltime is not None:
         walltime = get_walltime_str(stage.resources.walltime)
         sbatch_args.append(f"--time={walltime}")
+    if stage.resources.partition is not None:
+        sbatch_args.append(f"--partition={stage.resources.partition}")  # command line beats `#SBATCH` in job file
 
     # Combine afterok (stage-to-stage) and singleton (lane cap) dependencies; SLURM ANDs
     # comma-separated dependency conditions.

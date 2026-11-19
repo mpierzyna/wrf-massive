@@ -35,7 +35,7 @@ if env.get("require_marker"):
 
 p_test = Pipeline(
     a=StageA(work_dir=env.get("work_dir", "a"), resources=res),
-    b=StageA(work_dir="b", resources=res.model_copy(update={"n_nodes": 2})),
+    b=StageA(work_dir="b", resources=res.model_copy(update={"n_nodes": 2, "partition": "fat"})),
 )
 p_tmp = Pipeline(
     a=StageA(work_dir="a", tmp_work_root=tmp, tmp_skip_teardown=True),
@@ -258,6 +258,8 @@ def test_submit(ws, fake_sbatch):
     assert cmd_a[-3:] == [str(ws / "job.sh"), "a", str(ws / "sim_1")]
     assert "--nodes=1" in cmd_a  # default
     assert "--nodes=2" in cmd_b
+    assert not [arg for arg in cmd_a if arg.startswith("--partition")]  # default: keep the job file's partition
+    assert "--partition=fat" in cmd_b
     assert "--dependency=afterok:101" in cmd_b
 
     write_env(ws / "env.yaml", pipeline="p_test", job_file="job.sh")

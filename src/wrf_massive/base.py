@@ -69,6 +69,7 @@ class Resources(pydantic.BaseModel):
     mem_per_cpu: str  # memory per CPU (e.g. "4G", "800M")
     n_nodes: int = pydantic.Field(default=1, gt=0)  # number of nodes (SLURM `--nodes`)
     walltime: datetime.timedelta | None = None  # maximum walltime
+    partition: str | None = None  # SLURM `--partition`; overrides the job file's `#SBATCH --partition`, None keeps it
     max_concurrent: int | None = pydantic.Field(default=None, gt=0)
     # If set, caps the number of concurrently RUNNING jobs for this stage at this value,
     # independent of available CPU/core headroom. Implemented via SLURM's

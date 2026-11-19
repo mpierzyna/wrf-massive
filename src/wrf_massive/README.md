@@ -119,7 +119,11 @@ in one array). Options like `tmp_teardown_globs` and `tmp_skip_teardown` are set
   SLURM decides how many tasks go on each node (it fills nodes one after the other), so the split is only even if
   the tasks exactly fill the nodes, e.g. 2 × 128 on nodes with 128 cores.
   Only MPI programs (WRF, WPS) can make use of several nodes; Python stages such as postprocessing run on one.
-- `cpus_total` is a convenience property computed as `n_tasks * cpus_per_task`.
+- `partition` (optional `str`) — SLURM partition. It is passed to `sbatch` on the command line, which takes
+  precedence over an `#SBATCH --partition` line in the job file. Unset by default: the job file's partition is used.
+- `cpus_total` is a convenience property computed as `n_tasks * cpus_per_task`. Parallel post-processing starts this
+  many workers unless the stage's `n_workers` is set lower, e.g. to give each worker more memory when the cluster
+  ties memory to CPUs.
 - `max_concurrent` (optional `int`) — limits how many jobs for this stage are allowed to run at the
   same time. Unset by default (no limit). See "Submitting to SLURM" below for when to use it.
 

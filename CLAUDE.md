@@ -152,7 +152,8 @@ workspace outside the package, created with `wrf-massive init` (`templates/works
   nothing), then calls `setup()` unless already `is_setup()` and `run()` unless already `is_done()`, all inside the
   stage's tmp context. `Pipeline.run()` skips the whole simulation if `sim_dir/.done` exists.
 - **`Resources`**: `n_tasks` (total over all nodes, SLURM `--ntasks`), `cpus_per_task`, `mem_per_cpu`, `n_nodes`
-  (default 1, SLURM `--nodes`), optional `walltime`; used by the CLI's SLURM
+  (default 1, SLURM `--nodes`), optional `walltime`, optional `partition` (SLURM `--partition`; passed on the
+  command line, so it overrides the job file's `#SBATCH --partition`; None keeps the job file's); used by the CLI's SLURM
   submission helpers to build `sbatch` args. Optional `max_concurrent: int` caps how many jobs for that
   stage can be *running* at once across all simulations, independent of CPU/core headroom — enforced in
   `cli.py`'s `_submit_stage_slurm` via SLURM's `--dependency=singleton`, hashing each sim_dir into one of
@@ -231,6 +232,9 @@ postproc).
    project setup. `Cn2PostProcStage` stores only `ct2`/`cn2` (+ `z`/`HGT`/`p`); projects subclass it with their own
    `extract_vars`. A name needed both raw and destaggered raises at
    init (wrf-python's metadata decorators also need a template field, `P` for heights and 3D winds).
+   `run_parallel=True` uses a process pool of `n_workers` (default None = `resources.cpus_total`); `n_workers` may
+   only be set with `run_parallel` and must not exceed `cpus_total` (checked at init). Setting it lower trades CPUs
+   for memory per worker on clusters with a fixed memory per CPU or a minimum allocation.
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
 `StageArray` runs several substages inside one job (one SLURM allocation). It overrides `tmp_work_dir` only:

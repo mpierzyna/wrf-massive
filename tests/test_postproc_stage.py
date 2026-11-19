@@ -183,6 +183,11 @@ def test_invalid_config_fails_at_init():
     with pytest.raises(pydantic.ValidationError, match="run_parallel"):
         _ParallelByDefault(**_STAGE_KWARGS, extract_vars=[])
 
+    with pytest.raises(pydantic.ValidationError, match="exceeds the allocated CPUs"):
+        PostProcStage(**_STAGE_KWARGS, extract_vars=[], run_parallel=True, resources=_RESOURCES, n_workers=3)
+    with pytest.raises(pydantic.ValidationError, match="would be ignored"):
+        PostProcStage(**_STAGE_KWARGS, extract_vars=[], resources=_RESOURCES, n_workers=1)
+
     with pytest.raises(pydantic.ValidationError, match="Unknown derived variable 'not_a_derived_var'"):
         PostProcStage(**_STAGE_KWARGS, extract_vars=["not_a_derived_var"])
 
@@ -292,6 +297,25 @@ def test_parallel_run(tmp_path):
         ds = xr.open_dataset(f_p)
         assert ds.identical(xr.open_dataset(f_s))
         assert {"w", "u_met", "v_met", "ct2", "cn2"} <= set(ds.data_vars) and "u_v" not in ds.dims
+
+
+def test_n_workers(tmp_path, monkeypatch):
+    """`n_workers` caps the worker pool below the allocated CPUs; unset, all allocated CPUs are used."""
+    import concurrent.futures
+
+    seen = []
+    pool = concurrent.futures.ProcessPoolExecutor
+
+    def recording_pool(max_workers=None, **kwargs):
+        seen.append(max_workers)
+        return pool(max_workers=max_workers, **kwargs)
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", recording_pool)
+    kwargs = dict(extract_vars=["w"], run_parallel=True, resources=_RESOURCES)
+    _run(tmp_path / "all", **kwargs)
+    _, outputs = _run(tmp_path / "capped", n_workers=1, **kwargs)
+    assert seen == [_RESOURCES.cpus_total, 1]
+    assert len(outputs) == 2
 
 
 def test_written_outputs(tmp_path):

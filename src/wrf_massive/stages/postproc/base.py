@@ -66,6 +66,9 @@ class PostProcStage(Stage):
 
     compression: bool
     run_parallel: bool = False  # whether to run in parallel using multiprocessing
+    # Number of parallel workers. None uses all allocated CPUs (`resources.cpus_total`). Set it lower to give each
+    # worker more memory, e.g. on clusters with a minimum allocation or a fixed memory per CPU.
+    n_workers: int | None = pydantic.Field(default=None, gt=0)
     file_suffix: str = "proc"  # appended to wrfout filenames to indicate post-processed files
     discard_warmup: bool = True  # whether to discard wrfout files from warmup period (default: True)
     single_precision: bool = True  # cast float64 data variables to float32 before saving
@@ -78,6 +81,14 @@ class PostProcStage(Stage):
                 "'run_parallel=True' requires 'resources' to be set: "
                 "the number of workers is taken from 'resources.cpus_total'."
             )
+        if self.n_workers is not None:
+            if not self.run_parallel:
+                raise ValueError("'n_workers' is set but 'run_parallel=False', so it would be ignored.")
+            if self.n_workers > self.resources.cpus_total:
+                raise ValueError(
+                    f"'n_workers={self.n_workers}' exceeds the allocated CPUs "
+                    f"(resources.cpus_total={self.resources.cpus_total})."
+                )
         return self
 
     # NOTE: The validators below must be model validators (not field validators), because field validators are
@@ -215,7 +226,8 @@ class PostProcStage(Stage):
 
         if self.run_parallel:
             # Parallel run
-            n_workers = self.resources.cpus_total  # guaranteed to exist by `ensure_resources_for_parallel`
+            # `resources` guaranteed to exist by `ensure_resources_for_parallel`
+            n_workers = self.n_workers or self.resources.cpus_total
             logger.info(f"Starting parallel post-processing of {len(inputs)} file(s) with {n_workers} workers...")
             with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = [ex.submit(self.run_single, s, f) for f in inputs]
