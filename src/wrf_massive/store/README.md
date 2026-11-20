@@ -29,6 +29,7 @@ cn2 = Cn2PostProcStage(
     work_dir="4_postproc",
     wrfout_dir="3_wrf",
     domain=1,
+    crop=5,  # drop WRF's lateral boundary zone (spec_bdy_width) in y and x, after processing
     store=ZarrStore(
         path="/project/otprof.zarr",  # shared by all domains (relative paths: to the workspace root)
         domain="alps",  # group in the store
@@ -61,6 +62,7 @@ ingest = IngestStage(
     work_dir="5_ingest",  # holds only a lock
     src=NetCDFStore(file_suffix="cn2"),  # the netCDF files to read; root="/old/workspace" for another workspace's sims
     src_dir="4_postproc",  # work dir of the stage that wrote them
+    crop=5,  # as PostProcStage.crop, for output that was written uncropped
     store=ZarrStore(path="/project/otprof.zarr", domain="nl", static_vars=["HGT", "LANDMASK"]),
     run_parallel=True,
     resources=...,

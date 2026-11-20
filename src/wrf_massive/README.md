@@ -217,6 +217,9 @@ Notes:
 - Postprocessing reads, processes and writes each `wrfout` file one time step (frame) at a time, appending to the
   output file, so the memory of a worker is set by the size of one frame, not by the number of frames per file.
   Postproc fns therefore see a single frame and must not combine time steps.
+- `crop=n` drops the outer `n` cells on each side of the horizontal grid after processing, e.g. WRF's lateral
+  boundary zone where the forcing is applied (`crop=5` for `spec_bdy_width = 5`). Derived fields are computed on the
+  full grid first.
 - Where the output goes is set by the stage's `store`: by default `NetCDFStore`, one compressed netCDF file per
   `wrfout` file in the work dir (`store=NetCDFStore(compression=False, file_suffix="cn2")`); an output file only
   appears once it is complete, so a re-run continues with the missing files. `ZarrStore` writes into a zarr store

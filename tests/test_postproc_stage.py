@@ -378,3 +378,18 @@ def test_failure_names_input_file(tmp_path):
             _run(tmp_path, extract_vars=["NOT_A_WRF_VARIABLE"], run_parallel=run_parallel, resources=_RESOURCES)
         msg = str(excinfo.value) + str(excinfo.value.__cause__)
         assert any(f.name in msg for f in WRFOUT_DIR.glob("wrfout_aux_d01_*")), msg  # workers finish in any order
+
+
+def test_crop(tmp_path):
+    """`crop` cuts the outer cells of the horizontal grid after processing: the output equals the full output's
+    `[n:-n]` in y and x (derived fields computed on the full grid), coordinates included; too large a crop fails."""
+    kwargs = dict(extract_vars=["w", "u_met", "th", "HGT"])
+    _, full = _run(tmp_path / "full", **kwargs)
+    pp, cropped = _run(tmp_path / "cropped", crop=1, **kwargs)
+    for f_full, f_crop in zip(full, cropped):
+        a, b = xr.open_dataset(f_full), xr.open_dataset(f_crop)
+        assert b.attrs["crop"] == 1 and "crop" not in a.attrs
+        expected = a.isel(south_north=slice(1, -1), west_east=slice(1, -1))
+        xr.testing.assert_identical(b.drop_attrs(deep=False), expected.drop_attrs(deep=False))
+    with pytest.raises(RuntimeError, match="leaves no grid points"):
+        _run(tmp_path / "too_much", crop=3, **kwargs)  # 5 x 5 fixture

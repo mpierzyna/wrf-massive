@@ -37,6 +37,37 @@ def frame_times(f: pathlib.Path) -> np.ndarray:
     raise ValueError(f"{f}: neither a 'Times' nor a 'time' variable.")
 
 
+HORIZONTAL_DIMS = ("south_north", "west_east", "south_north_stag", "west_east_stag")
+
+
+def crop_xy(ds: xr.Dataset, n: int) -> xr.Dataset:
+    """`ds` without the outer `n` cells on each side of every horizontal dim (`[n:-n]`), e.g. WRF's lateral boundary
+    zone (`spec_bdy_width`), where the forcing is applied. Coordinates (XLAT/XLONG) are cropped alike."""
+    if n == 0:
+        return ds
+    dims = [d for d in HORIZONTAL_DIMS if d in ds.dims]
+    small = {d: ds.sizes[d] for d in dims if ds.sizes[d] <= 2 * n}
+    if small:
+        raise ValueError(f"crop={n} leaves no grid points along {small}.")
+    out = ds.isel({d: slice(n, -n) for d in dims})
+    out.attrs["crop"] = n
+    return out
+
+
+def read_static(f: pathlib.Path, names: list[str], crop: int = 0) -> dict[str, np.ndarray]:
+    """First frame of the (y, x) fields `names` of input file `f` (wrfout or netCDF output), cropped like the
+    stage's output; names not in the file are skipped."""
+    out = {}
+    with netCDF4.Dataset(f) as nc:
+        nc.set_auto_mask(False)
+        for v in names:
+            if v in nc.variables:
+                values = np.asarray(nc[v][:], dtype="float32")
+                values = values.reshape(-1, *values.shape[-2:])[0]
+                out[v] = values[crop:-crop, crop:-crop] if crop else values
+    return out
+
+
 def lead_indices(times: np.ndarray, begin: datetime.datetime, interval: np.timedelta64) -> np.ndarray:
     """Index of each frame time on the lead time axis that starts at `begin` with step `interval`."""
     offset = times.astype("M8[s]") - np.datetime64(begin, "s")

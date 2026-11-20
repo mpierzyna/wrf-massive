@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import pathlib
 
+import numpy as np
+import pydantic
+import xarray as xr
+
 from wrf_massive.base import Simulation, TPath
 from wrf_massive.log import get_logger
 from wrf_massive.stages.parallel import FileParallelStage
-from wrf_massive.store.frames import FrameTemplate, frame_times
+from wrf_massive.store.frames import FrameTemplate, crop_xy, frame_times, read_static
 from wrf_massive.store.netcdf import NetCDFStore
 from wrf_massive.store.zarr_store.store import ZarrStore
 
@@ -30,6 +34,9 @@ class IngestStage(FileParallelStage):
     src: NetCDFStore  # where the netCDF files are (`file_suffix`, optionally `root`: another workspace's sims)
     src_dir: TPath = pathlib.Path("4_postproc")  # work dir of the postproc stage that wrote them, relative to a sim
     store: ZarrStore  # destination (named like `PostProcStage.store`: the store the stage writes to)
+    # Cells cropped from each side in y and x (`[crop:-crop]`), as `PostProcStage.crop`: to drop WRF's lateral
+    # boundary zone from output that was post-processed without it. 0: as in the netCDF files.
+    crop: int = pydantic.Field(default=0, ge=0)
 
     def get_inputs(self, s: Simulation) -> list[pathlib.Path]:
         inputs = self.src.outputs(self, s, self.src_dir)
@@ -46,7 +53,14 @@ class IngestStage(FileParallelStage):
             inputs = self.get_inputs(s)
         except FileNotFoundError:
             return None
-        return FrameTemplate.from_inputs(inputs, lambda f: NetCDFStore.read_frames(f, 0, 1).load())
+        return FrameTemplate.from_inputs(inputs, lambda f: self._read(f, 0, 1).load())
+
+    def input_static(self, f: pathlib.Path, names: list[str]) -> dict[str, np.ndarray]:
+        """Static (y, x) fields of netCDF file `f` as ingested (cropped); names not in `f` are skipped."""
+        return read_static(f, names, self.crop)
+
+    def _read(self, f: pathlib.Path, i0: int, n: int | None) -> xr.Dataset:
+        return crop_xy(NetCDFStore.read_frames(f, i0, n), self.crop)  # lazy: cropping selects, nothing is loaded
 
     def is_setup(self, s: Simulation) -> bool:
         return self.get_work_dir(s, create=False).is_dir()
@@ -74,7 +88,7 @@ class IngestStage(FileParallelStage):
                 return
             logger.info(f"Ingesting {f.name} ({len(pending)} of {n} frame(s))...")
             for i0, n_run in _runs(pending):
-                w.write(NetCDFStore.read_frames(f, i0, n_run), i0)  # lazy: loaded per variable by the writer
+                w.write(self._read(f, i0, n_run), i0)  # lazy: loaded per variable by the writer
 
 
 def _runs(frames: list[int]) -> list[tuple[int, int]]:

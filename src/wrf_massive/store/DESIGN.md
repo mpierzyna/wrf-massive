@@ -46,8 +46,9 @@ used by `PostProcStage.store`). They are pickled to the workers; runtime state l
   `i0` of `f`). Zarr commits per `write`; netCDF renames its temp file when the context is left.
 - `is_done(stage, s, inputs)`.
 
-A stage writing into a store implements `StoreStage`: `store`, `stored_vars(s)` (the variables it writes) and
-`store_template(s)` (one output frame and the file structure, to lay out a domain). Both `PostProcStage` and
+A stage writing into a store implements `StoreStage`: `store`, `stored_vars(s)` (the variables it writes),
+`store_template(s)` (one output frame and the file structure, to lay out a domain) and `input_static(f, names)`
+(an input's static fields as the stage outputs them, for the grid check). Both `PostProcStage` and
 `IngestStage` are `FileParallelStage`s: one input file per worker, started with `spawn` (zarr runs threads in the
 parent, and forking a multi-threaded process can deadlock), so stages must be importable by module name and scripts
 running them in parallel need an `if __name__ == "__main__":` guard.
@@ -81,7 +82,9 @@ Dims:
   of a domain; the interval is taken from the template.
 - `bottom_top`: native WRF mass levels, index 0 lowest. No vertical interpolation; heights are data (`z` above sea
   level, `HGT`; height above ground is `z − HGT`). Staggered variables are refused (destagger in postproc).
-- `y`, `x`: the mass grid (`south_north`, `west_east`), renamed because a domain can be rotated.
+- `y`, `x`: the mass grid (`south_north`, `west_east`), renamed because a domain can be rotated; optionally cropped
+  by `crop` cells on each side (`PostProcStage.crop`, `IngestStage.crop`), e.g. WRF's lateral boundary zone
+  (`spec_bdy_width`). The crop is applied after the postproc fns and recorded as `crop` in the output attrs.
 
 Data arrays exist only for the variables a domain outputs (the union over domains is not padded), so an absent
 variable raises `KeyError` instead of reading as NaN. Unwritten regions take no space and read as NaN.
@@ -140,7 +143,8 @@ and `p` BitRound 16, winds and humidity 12, turbulence fields 10 (−59 % vs. th
    (no existing chunk key changes, `zarr.json` is replaced atomically). The global `--debug` makes it a dry run.
 2. `session` (before any frame is processed): the domain exists with the stage's variables, static vars, tile and
    encodings; the sim is initialized; every input file lies on the lead time grid after `begin`, within one shard,
-   no shard twice; `XLAT`/`XLONG`/static fields equal the stored ones. Then an exclusive `fcntl` lock in the stage's
+   no shard twice; `XLAT`/`XLONG`/static fields of the input, as the stage outputs them (`input_static`, cropped),
+   equal the stored ones, so another grid, domain or crop is refused. Then an exclusive `fcntl` lock in the stage's
    work dir (one job per sim) is held for the whole run.
 3. `ZarrWriter` maps frame times to lead times, writes each variable into region `[sim, lead_time]` and sets
    `written` last: frames with `written = False` are redone after a crash (resume per frame). `is_done` = every frame

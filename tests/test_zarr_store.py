@@ -431,3 +431,31 @@ def test_cli(tmp_path, monkeypatch, written):
     finally:
         os.chdir(cwd)
         sys.modules.pop("pipeline", None)
+
+
+def test_crop(tmp_path, written):
+    """A cropped stage lays out and fills the store on the cropped grid; ingest crops uncropped netCDF output alike;
+    a stage with another crop is refused by the preflight check."""
+    from wrf_massive.store.frames import crop_xy
+
+    s = _sim(tmp_path, "sim_1")
+    direct = _stage(_store(tmp_path, encoding=ENCODING), crop=1)
+    init_domain(direct, [s])
+    direct.run(s)
+    assert dict(_open(direct.store).sizes) == {"sim": 1, "lead_time": N_LEAD, "bottom_top": 100, "y": 3, "x": 3}
+    _assert_matches(direct.store, 0, s, [crop_xy(r, 1) for r in written.refs])
+    assert _open(direct.store).attrs["wrf_attrs"]["crop"] == 1
+
+    src = NetCDFStore(file_suffix="cn2", root=written.ref_root)  # uncropped netCDF of the same files
+    ingest = IngestStage(
+        work_dir="ingest", src=src, store=_store(tmp_path, domain="ingested", encoding=ENCODING), crop=1
+    )
+    init_domain(ingest, [s])
+    ingest.run(s)
+    a, b = _open(direct.store), _open(ingest.store)
+    for v in ("cn2", "th", "XLAT", "HGT"):
+        sel = {"lead_time": slice(0, N_LEAD - 1)} if "lead_time" in a[v].dims else {}
+        xr.testing.assert_equal(a[v].isel(sel), b[v].isel(sel))
+
+    with pytest.raises(RuntimeError, match="crop"):
+        direct.model_copy(update={"crop": 2}).run(s)

@@ -23,7 +23,7 @@ from wrf_massive.stages.parallel import FileParallelStage
 from wrf_massive.stages.postproc.iofields import parse_myoutfields
 from wrf_massive.stages.postproc.variables import REQUIRED_WRF_FIELDS, TVarList, var_name, wrf_fields_of
 from wrf_massive.stages.postproc.wrfout import load_wrfout, n_frames
-from wrf_massive.store.frames import FrameTemplate
+from wrf_massive.store.frames import FrameTemplate, crop_xy, read_static
 from wrf_massive.store.netcdf import NetCDFStore
 from wrf_massive.store.zarr_store.store import ZarrStore
 
@@ -80,6 +80,9 @@ class PostProcStage(FileParallelStage):
     store: TStore = pydantic.Field(default_factory=NetCDFStore)
 
     discard_warmup: bool = True  # whether to discard wrfout files from warmup period (default: True)
+    # Cells cropped from each side of the horizontal grid (`[crop:-crop]` in y and x) after processing, e.g. WRF's
+    # lateral boundary zone where the forcing is applied (`spec_bdy_width` in namelist.input). 0: full grid.
+    crop: int = pydantic.Field(default=0, ge=0)
 
     # NOTE: The validators below must be model validators (not field validators), because field validators are
     # skipped for default values. Subclasses like Cn2PostProcStage define `extract_vars` as a class default, so a
@@ -251,6 +254,7 @@ class PostProcStage(FileParallelStage):
             if ds[v].dtype == np.float64:
                 ds[v] = ds[v].astype(np.float32)
 
+        ds = crop_xy(ds, self.crop)  # after the postproc fns: derived fields are computed on the full grid
         logger.debug(ds.sizes)
         logger.debug(ds.dtypes)
         return ds
@@ -261,6 +265,10 @@ class PostProcStage(FileParallelStage):
         keep = [var_name(v) for v in self.extract_vars]
         keep += [name for fn in self.postproc_fns for name in fn.returns]
         return list(dict.fromkeys(keep))
+
+    def input_static(self, f: pathlib.Path, names: List[str]) -> Dict[str, np.ndarray]:
+        """Static (y, x) fields of input file `f` as the stage outputs them (cropped); names not in `f` are skipped."""
+        return read_static(f, names, self.crop)
 
     def store_template(self, s: Simulation) -> FrameTemplate | None:
         """One processed frame of `s` and its file structure, from which a store lays out a domain (None: no input

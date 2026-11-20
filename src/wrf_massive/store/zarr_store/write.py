@@ -15,7 +15,6 @@ import pathlib
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-import netCDF4
 import numcodecs.blosc
 import numpy as np
 import xarray as xr
@@ -119,25 +118,23 @@ def session(cfg: ZarrStore, stage: StoreStage, s: Simulation, inputs: list[pathl
             raise RuntimeError(f"{f.name} and {shards[shard].name} would both write shard {shard}.")
         shards[shard] = f
     if inputs:
-        _check_static(group, cfg, inputs[0])
+        _check_static(group, cfg, stage, inputs[0])
 
     # 4. No other job writes this sim (one writer per shard)
     with L.exclusive_lock(stage.get_work_dir(s) / SIM_LOCK, f"Writing sim '{s.name}' to the store"):
         yield
 
 
-def _check_static(group: zarr.Group, cfg: ZarrStore, f: pathlib.Path) -> None:
-    """Grid and static fields of input `f` equal the stored ones (fields not in the file itself are skipped)."""
-    with netCDF4.Dataset(f) as nc:
-        nc.set_auto_mask(False)
-        for v in [*L.COORDS_2D, *cfg.static_vars]:
-            if v not in nc.variables:
-                continue
-            values = np.asarray(nc[v][:], dtype="float32")
-            values = values.reshape(-1, *values.shape[-2:])[0]  # first frame
-            stored = group[v][:]
-            if values.shape != stored.shape or not np.array_equal(values, stored, equal_nan=True):
-                raise RuntimeError(f"'{v}' of {f.name} differs from the store's (another grid or domain?).")
+def _check_static(group: zarr.Group, cfg: ZarrStore, stage: StoreStage, f: pathlib.Path) -> None:
+    """Grid and static fields of input `f`, as the stage outputs them (e.g. cropped), equal the stored ones (fields
+    not in the file itself are skipped)."""
+    for v, values in stage.input_static(f, [*L.COORDS_2D, *cfg.static_vars]).items():
+        stored = group[v][:]
+        if values.shape != stored.shape or not np.array_equal(values, stored, equal_nan=True):
+            raise RuntimeError(
+                f"'{v}' of {f.name} differs from the store's (shape {values.shape} vs {stored.shape}): another grid, "
+                f"domain or crop?"
+            )
 
 
 def is_done(cfg: ZarrStore, s: Simulation, inputs: list[pathlib.Path]) -> bool:

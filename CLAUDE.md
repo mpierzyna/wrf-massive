@@ -242,6 +242,10 @@ postproc).
    IO/asyncio threads live in the parent once `session` ran, and forking a multi-threaded process can deadlock; so
    stages and postproc fns must be importable by module name (a workspace's `pipeline.py` is, being on `sys.path`
    after activation) and scripts running them in parallel need a `__main__` guard.
+   `crop` (≥ 0) is applied at the end of `_process_frame` by `store/frames.py::crop_xy` (`[n:-n]` on every
+   horizontal dim incl. `_stag`, coords alike, `attrs["crop"]`; raises if nothing is left), so postproc fns see the
+   full grid; `IngestStage.crop` does the same for uncropped netCDF. The zarr preflight compares static fields via
+   `stage.input_static(f, names)` (`frames.read_static`, cropped), so a changed crop is refused.
    `process_file` works frame by frame to bound memory: `_process_frame(f, i)` reads frame `i`
    (`load_wrfout(..., timeidx=i)`; `read_var` re-adds the `Time` dim wrf-python drops for a single frame), applies the
    postproc fns (so they must be time-local), keeps the stored vars and casts float64 fn results to float32
@@ -254,7 +258,8 @@ postproc).
    `store.is_done` backs `is_done`, and `store.writer(stage, s, f)` is a context manager yielding a `Writer` per input
    file in the worker: `pending_frames(n)` says which frames to process, `write(ds, i0)` takes one or more
    consecutive frames (zarr commits per write, netCDF when the context is left). What a store needs from a stage is
-   the `store/base.py::StoreStage` protocol (`store`, `stored_vars(s)`, `store_template(s)`, `get_work_dir`).
+   the `store/base.py::StoreStage` protocol (`store`, `stored_vars(s)`, `store_template(s)`, `input_static(f, names)`,
+   `get_work_dir`).
    `NetCDFStore(compression, file_suffix)`
    (default of `PostProcStage`; `Cn2PostProcStage` defaults to `file_suffix="cn2"`) writes `<input>_<suffix>.nc`
    into the work dir: frame(s) at `i0 == 0` with `to_netcdf(unlimited_dims=["time"])` and `_encoding` (time as

@@ -17,6 +17,7 @@ import pathlib
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Protocol
 
+import numpy as np
 import pydantic
 import xarray as xr
 
@@ -38,6 +39,10 @@ class StoreStage(Protocol):
 
     def store_template(self, s: Simulation) -> FrameTemplate | None:
         """One output frame of `s` plus its file structure, to lay out a store (None: `s` has no input yet)."""
+
+    def input_static(self, f: pathlib.Path, names: list[str]) -> dict[str, np.ndarray]:
+        """Static (y, x) fields `names` of input file `f` as the stage outputs them (e.g. cropped); missing ones
+        are skipped. Used to check that an input belongs to the store's grid."""
 
 
 class Writer(abc.ABC):
