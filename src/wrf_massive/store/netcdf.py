@@ -15,6 +15,7 @@ import h5netcdf
 import numpy as np
 import xarray as xr
 
+from wrf_massive.base import TPath
 from wrf_massive.log import get_logger
 from wrf_massive.store.base import PostProcStore, Writer
 
@@ -28,23 +29,41 @@ class NetCDFStore(PostProcStore):
     """One netCDF file per input file, named `<input name>_<file_suffix>.nc`, in the stage's work dir.
 
     A file is written frame by frame into a hidden temp file and renamed when complete, so an existing output file is
-    always complete: it is skipped on a re-run and counts towards `is_done`.
+    always complete: it is skipped on a re-run and counts towards `is_done`. Its files can also be read frame by frame
+    (`read_frames`), e.g. by `IngestStage`.
     """
 
     kind: Literal["netcdf"] = "netcdf"
     compression: bool = True  # zlib
     file_suffix: str = "proc"  # appended to the input filename to mark post-processed files
+    # If set, files are in `<root>/<sim name>/<work dir>` instead of the sim's own work dir, e.g. to read the output
+    # of the same sims in another (old) workspace
+    root: TPath | None = None
 
-    def output_dir(self, stage: Stage, s: Simulation) -> pathlib.Path:
-        return stage.get_work_dir(s)
+    def output_dir(self, stage: Stage, s: Simulation, work_dir: pathlib.Path | None = None) -> pathlib.Path:
+        """Dir of the files: the stage's work dir (or `work_dir`, relative to the sim dir), below `root` if set."""
+        if self.root is not None:
+            return pathlib.Path(self.root) / s.name / (work_dir or stage.work_dir)
+        return stage.get_work_dir(s) if work_dir is None else s.sim_dir / work_dir
 
     def output_path(self, stage: Stage, s: Simulation, f: pathlib.Path) -> pathlib.Path:
         # Replace `:` of the WRF date in the input name, which causes problems on Windows storage
         return self.output_dir(stage, s) / f"{f.name.replace(':', '-')}_{self.file_suffix}.nc"
 
-    def outputs(self, stage: Stage, s: Simulation) -> list[pathlib.Path]:
+    def outputs(self, stage: Stage, s: Simulation, work_dir: pathlib.Path | None = None) -> list[pathlib.Path]:
         """Complete output files of simulation `s` (temp files start with a dot and are not matched)."""
-        return sorted(self.output_dir(stage, s).glob(f"wrfout_*{self.file_suffix}.nc"))
+        return sorted(self.output_dir(stage, s, work_dir).glob(f"wrfout_*{self.file_suffix}.nc"))
+
+    @staticmethod
+    def read_frames(f: pathlib.Path, i0: int = 0, n: int | None = None) -> xr.Dataset:
+        """Frames `i0 .. i0 + n` of output file `f`, lazily loaded (one variable at a time when accessed).
+
+        Also reads output of older wrf-massive versions, whose single-frame files have a scalar `time`.
+        """
+        ds = xr.open_dataset(f, engine="h5netcdf")
+        if "time" not in ds.dims:
+            ds = ds.expand_dims("time")  # to every data variable; coordinates (XLAT/XLONG) stay as they are
+        return ds.isel(time=slice(i0, None if n is None else i0 + n))
 
     def is_done(self, stage: Stage, s: Simulation, inputs: list[pathlib.Path]) -> bool:
         return all(self.output_path(stage, s, f).exists() for f in inputs)
@@ -52,6 +71,7 @@ class NetCDFStore(PostProcStore):
     @contextlib.contextmanager
     def writer(self, stage: Stage, s: Simulation, f: pathlib.Path) -> Iterator[Writer]:
         f_out = self.output_path(stage, s, f)
+        f_out.parent.mkdir(parents=True, exist_ok=True)  # below `root`, not created as a work dir
         w = _NetCDFWriter(f_out, compression=self.compression)
         try:
             yield w

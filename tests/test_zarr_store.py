@@ -349,3 +349,157 @@ def test_cli_init_domain(tmp_path, monkeypatch):
     finally:
         os.chdir(cwd)
         sys.modules.pop("pipeline", None)
+
+
+# --- Ingest, reading, pull, verify ---------------------------------------------------------------------------------
+
+
+def _old_workspace_output(tmp_path: pathlib.Path, s: Simulation, extra_scalar_frame: bool = True) -> pathlib.Path:
+    """netCDF output of `s` as an older wrf-massive wrote it into another workspace: `<root>/<sim>/4_postproc`,
+    plus (optionally) a last single-frame file with a scalar `time`, as before 2.3.0."""
+    root = tmp_path / "old_ws"
+    pn = _stage(tmp_path, NetCDFStore(file_suffix="cn2", root=root)).model_copy(
+        update={"work_dir": pathlib.Path("4_postproc")}
+    )
+    pn.run(s)
+    if extra_scalar_frame:
+        last = NetCDFStore.read_frames(pn.store.outputs(pn, s)[-1]).isel(time=0).load()  # scalar time
+        last = last.assign_coords(time=np.datetime64(s.end, "ns"))
+        last.encoding = {}  # drop the source file's unlimited `time`
+        last.to_netcdf(
+            root / s.name / "4_postproc" / f"wrfout_aux_d01_{s.end:%Y-%m-%d_%H-%M-%S}_cn2.nc", engine="h5netcdf"
+        )
+    return root
+
+
+def test_ingest_matches_direct_postproc(tmp_path):
+    """Ingesting another workspace's netCDF output gives the same arrays as post-processing straight into the store,
+    and handles old single-frame files with a scalar `time`."""
+    s = _sim(tmp_path, "sim_1")
+    root = _old_workspace_output(tmp_path, s)
+
+    direct = _stage(tmp_path)  # domain "d"
+    init_domain(direct, [s])
+    direct.run(s)
+
+    from wrf_massive.store.ingest import IngestStage
+
+    ingest = IngestStage(
+        work_dir="ingest",
+        src=NetCDFStore(file_suffix="cn2", root=root),
+        store=direct.store.model_copy(update={"domain": "ingested"}),
+        run_parallel=True,
+        resources=RESOURCES,
+    )
+    report = init_domain(ingest, [s])
+    assert any("creating from template" in line and "4_postproc" in line for line in report)
+    assert not ingest.is_done(s)
+    ingest.run(s)
+    assert ingest.is_done(s)
+
+    a, b = _open(direct), _open(ingest)
+    assert set(a.data_vars) == set(b.data_vars) and dict(a.sizes) == dict(b.sizes)
+    for v in a.data_vars:
+        if v == "written":
+            continue
+        sel = {"lead_time": slice(0, 24)} if "lead_time" in a[v].dims else {}  # static fields: as they are
+        xr.testing.assert_equal(a[v].isel(sel), b[v].isel(sel))
+    assert b["written"].values[0, 24] and not a["written"].values[0, 24]  # the extra scalar-time frame
+    last = NetCDFStore.read_frames(sorted((root / "sim_1" / "4_postproc").glob("*.nc"))[-1])
+    np.testing.assert_array_equal(b["cn2"].values[0, 24], last["cn2"].values[0])
+
+    mtimes = {f: f.stat().st_mtime_ns for f in (ingest.store.abs_path / "ingested").rglob("c.*")}
+    ingest.run(s)  # complete: a re-run writes nothing
+    assert {f: f.stat().st_mtime_ns for f in (ingest.store.abs_path / "ingested").rglob("c.*")} == mtimes
+
+
+def test_open_domain_sorting_and_healpix(tmp_path):
+    from wrf_massive.store.zarr_store.read import hp_index, open_domain, select_cells
+
+    late, early = _sim(tmp_path, "sim_late", shift_h=0), _sim(tmp_path, "sim_early", shift_h=0)
+    early = early.model_copy(
+        update={"begin": early.begin - datetime.timedelta(days=3), "end": early.end - datetime.timedelta(days=3)}
+    )
+    stage = _stage(tmp_path)
+    init_domain(stage, [late])
+    init_domain(stage, [early])  # appended after, begins before
+
+    path = stage.store.abs_path
+    assert list(open_domain(path, "d")["sim_name"].values) == ["sim_early", "sim_late"]
+    assert list(open_domain(path, "d", sort=False)["sim_name"].values) == ["sim_late", "sim_early"]
+    with pytest.raises(KeyError, match="not in"):
+        open_domain(path, "nope")
+
+    import healpy
+
+    ds = open_domain(path, "d")
+    lat, lon = ds["XLAT"].values.astype("f8"), ds["XLONG"].values.astype("f8")
+    ipix10 = healpy.ang2pix(2**10, lon, lat, nest=True, lonlat=True)
+    np.testing.assert_array_equal(hp_index(ds, 10).values, ipix10)
+    cell = ipix10.ravel()[0]
+    assert (select_cells(ds, [cell], 10).values == (ipix10 == cell)).all()
+    with pytest.raises(ValueError, match="order"):
+        hp_index(ds, 24)
+
+
+def _store_with_two_sims(tmp_path):
+    stage, s1, s2 = _stage(tmp_path), _sim(tmp_path, "sim_1"), _sim(tmp_path, "sim_2")
+    init_domain(stage, [s1, s2])
+    stage.run(s1)
+    stage.run(s2)
+    return stage
+
+
+def test_pull_partial_copy(tmp_path):
+    """A pull copies metadata and the selected variables/sims only, never temp files; the reader exposes only what
+    the copy holds; pulls add up."""
+    from wrf_massive.store.zarr_store.pull import pull
+    from wrf_massive.store.zarr_store.read import open_domain
+
+    stage = _store_with_two_sims(tmp_path)
+    src = stage.store.abs_path
+    (src / "d" / "cn2" / "c.0.0.0.0.0.deadbeef.partial").write_bytes(b"x")  # interrupted write
+    dst = tmp_path / "copy.zarr"
+
+    report = pull(str(src), dst, ["d"], variables=["cn2", "w"], sims=["sim_1"], dry_run=True)
+    assert report[0].startswith("Would copy") and not (dst / "d" / "cn2").exists()
+
+    report = pull(str(src), dst, ["d"], variables=["cn2", "w"], sims=["sim_1"])
+    assert report[-1] == "d: 2 of 8 variable(s), 1 of 2 sim(s)"
+    assert not list(dst.rglob("*.partial"))
+    assert sorted(f.name for f in (dst / "d" / "cn2").iterdir()) == ["c.0.0.0.0.0", "c.0.6.0.0.0", "zarr.json"]
+    assert not (dst / "d" / "p").exists()
+
+    ds = open_domain(dst, "d")
+    assert list(ds["sim_name"].values) == ["sim_1"] and set(ds.data_vars) >= {"cn2", "w"} and "p" not in ds
+    xr.testing.assert_equal(ds["cn2"].load(), open_domain(src, "d")["cn2"].isel(sim=[0]).load())
+
+    pull(str(src), dst, ["d"], variables=["cn2"], sims=["sim_2"])
+    assert list(open_domain(dst, "d")["sim_name"].values) == ["sim_1", "sim_2"]
+    with pytest.raises(KeyError, match="No sim"):
+        pull(str(src), dst, ["d"], sims=["sim_9*"])
+    with pytest.raises(KeyError, match="no variable"):
+        pull(str(src), dst, ["d"], variables=["nope"])
+
+
+def test_verify(tmp_path):
+    from wrf_massive.store.zarr_store import layout
+    from wrf_massive.store.zarr_store.verify import verify
+
+    stage = _store_with_two_sims(tmp_path)
+    path = stage.store.abs_path
+    layout.open_domain(path, "d", mode="r+")[layout.WRITTEN][1, 0] = False  # sim_2 incomplete
+    (path / "d" / "w" / "c.1.0.0.0.0.abc.partial").write_bytes(b"x")
+
+    report = verify(path)
+    line = next(r for r in report if r.strip().startswith("d "))
+    # complete means all 25 lead times: the fixture's 2 files hold 4 of them
+    assert "2 sims" in line and "7/50 frames written" in line and "incomplete: 2 sims (sim_1, sim_2)" in line
+    assert "stray .partial files: 1" in report[-2]
+    assert any("1 sims  3/25 frames written" in r for r in verify(path, sims=["sim_2"]))
+
+    report = verify(path, clean=True)
+    assert "removed 1 .partial file(s)" in report[-1] and not list(path.rglob("*.partial"))
+
+    result = CliRunner().invoke(main, ["store", "verify", "--path", str(path)])
+    assert result.exit_code == 0 and "7/50 frames written" in result.output

@@ -316,8 +316,9 @@ class PostProcStage(Stage):
         logger.debug(ds.dtypes)
         return ds
 
-    def stored_vars(self) -> List[str]:
-        """Names of the variables in the output: requested explicitly OR returned by the stage's postproc fns."""
+    def stored_vars(self, s: Simulation | None = None) -> List[str]:
+        """Names of the variables in the output: requested explicitly OR returned by the stage's postproc fns (the
+        same for every sim, `s` is not needed)."""
         keep = [var_name(v) for v in self.extract_vars]
         keep += [name for fn in self.postproc_fns for name in fn.returns]
         return list(dict.fromkeys(keep))

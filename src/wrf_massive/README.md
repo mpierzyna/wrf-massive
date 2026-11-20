@@ -238,8 +238,18 @@ Notes:
   frame of the first given sim with output): `wrf-massive store init-domain --stage cn2 sim_*`. Running it again
   appends new sims; in another workspace it adds that workspace's domain to the same store. Post-processing then
   checks that the sim is initialized and its files fit the store before it writes anything, writes each frame
-  straight into the store and resumes per frame after a crash. Open a domain with
-  `xr.open_zarr("/project/otprof.zarr/alps", consolidated=True)`.
+  straight into the store and resumes per frame after a crash.
+- Existing netCDF output goes into a store with
+  `IngestStage(src=NetCDFStore(file_suffix="cn2"), store=ZarrStore(...))`, run with `run`/`submit` like any stage
+  (`NetCDFStore(root=...)` reads `<root>/<sim name>/4_postproc` of another workspace). Lay out its domain with
+  `store init-domain --stage <ingest stage>`; the template is the first netCDF file.
+- Reading: `wrf_massive.store.zarr_store.read.open_domain(path, "alps")` (sorted by sim begin; for a partial copy
+  only what it holds), HEALPix cells with `hp_index(ds, order)` / `select_cells(ds, cells, order)`.
+- `wrf-massive store verify --path <store>` (or `--stage`) reports sims, frames written and size per domain;
+  `wrf-massive store pull SRC DST --domain alps [--vars ...] [--sims ...] [--rclone-config ...]` copies part of a
+  store with rclone, e.g. from an HPC to a laptop.
+- Scripts that run a stage with `run_parallel=True` need an `if __name__ == "__main__":` guard: workers are started
+  with `spawn` and import the main module again.
 
 See `stages/README.md` for a short overview of the four pipeline steps.
 

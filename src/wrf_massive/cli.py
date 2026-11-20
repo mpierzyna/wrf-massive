@@ -473,6 +473,95 @@ def store_init_domain(state: CliState, stage_name: str, sim_dirs: Tuple[str, ...
         click.echo(line)
 
 
+@store_group.command("verify")
+@click.option("--stage", "stage_name", default=None, help="Stage in pipeline.py whose ZarrStore to check.")
+@click.option(
+    "--path",
+    "store_path",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Store (or a copy) to check instead; no workspace needed.",
+)
+@click.option("--domain", "domains", multiple=True, help="Only this domain (repeatable).")
+@click.option(
+    "--clean", is_flag=True, default=False, help="Remove stray `*.partial` files (only while nothing writes)."
+)
+@click.argument("sim_dirs", type=click.Path(exists=True, file_okay=False), nargs=-1)
+@pass_state
+def store_verify(state: CliState, stage_name, store_path, domains, clean, sim_dirs):
+    """Report what a store or a local copy contains: per domain sims, frames written, variables and size.
+
+    With --stage: the stage's store and domain, limited to the sims in SIM_DIRS if given. With --path: any store or
+    copy (made by `store pull`), no workspace needed.
+    """
+    if (stage_name is None) == (store_path is None):
+        raise click.UsageError("Give either --stage or --path.")
+    from wrf_massive.store.zarr_store.verify import verify  # needs zarr: only here
+
+    sims = None
+    if stage_name is not None:
+        p = state.pipeline
+        if stage_name not in p.stages:
+            raise click.UsageError(f"Unknown stage '{stage_name}'. Stages of the pipeline: {list(p.stages)}.")
+        from wrf_massive.store.zarr_store.init import zarr_store_of
+
+        try:
+            cfg = zarr_store_of(p[stage_name])
+        except ValueError as e:
+            raise click.UsageError(str(e)) from e
+        store_path, domains = cfg.abs_path, domains or (cfg.domain,)
+        sims = [Simulation.from_disk(d).name for d in _require_sim_dirs(sim_dirs)] if sim_dirs else None
+    elif sim_dirs:
+        raise click.UsageError("SIM_DIRS need --stage.")
+    try:
+        report = verify(_abspath(store_path), domains=list(domains) or None, sims=sims, clean=clean)
+    except (FileNotFoundError, KeyError) as e:
+        raise click.ClickException(str(e)) from e
+    for line in report:
+        click.echo(line)
+
+
+@store_group.command("pull")
+@click.argument("src")
+@click.argument("dst", type=click.Path(file_okay=False))
+@click.option("--domain", "domains", multiple=True, required=True, help="Domain to copy (repeatable).")
+@click.option("--vars", "variables", default=None, help="Only these variables, comma-separated (default: all).")
+@click.option("--sims", default=None, help="Only these sims by name, comma-separated, globs allowed (default: all).")
+@click.option(
+    "--rclone-config",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="rclone config file (passed as `rclone --config`; default: rclone's own).",
+)
+@click.option("--transfers", type=int, default=8, show_default=True, help="Parallel transfers.")
+@click.option("--dry-run", is_flag=True, default=False, help="Copy only metadata and show what would be copied.")
+def store_pull(src, dst, domains, variables, sims, rclone_config, transfers, dry_run):
+    """Copy (part of) a store with rclone. SRC is an rclone path (`remote:path` or local), DST a local dir.
+
+    Metadata, coordinates, static fields and the `written` mask are always copied; data arrays are filtered by
+    --vars and --sims. A manifest in DST records what the copy holds, so readers raise instead of returning NaN
+    for anything else. Pulling again into the same DST adds to the copy. Works without a workspace.
+    """
+    from wrf_massive.store.zarr_store.pull import pull  # needs zarr: only here
+
+    split = lambda s: [x.strip() for x in s.split(",") if x.strip()] if s else None  # noqa: E731
+    try:
+        report = pull(
+            src,
+            _abspath(dst),
+            list(domains),
+            variables=split(variables),
+            sims=split(sims),
+            rclone_config=_abspath(rclone_config) if rclone_config else None,
+            transfers=transfers,
+            dry_run=dry_run,
+        )
+    except (KeyError, RuntimeError) as e:
+        raise click.ClickException(str(e)) from e
+    for line in report:
+        click.echo(line)
+
+
 @main.group()
 def plot():
     """Plot WPS domains and simulation timelines. Works without a workspace."""

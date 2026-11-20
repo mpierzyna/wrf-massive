@@ -72,8 +72,9 @@ otprof.zarr/
   domain of the given postproc stage and the given sims to the store. Creates a new store if this is the first domain,
   appends the domain to an existing store otherwise, and appends sims not yet in the domain." Takes sim dirs like
   `run`/`submit`; it never scans the workspace. `--stage` is mandatory and must name a stage in `pipeline.py` that
-  writes to a `ZarrStore` (`PostProcStage.store` or `IngestStage.dst`) (no default: wrf-massive stays project-agnostic).
-  Store path, domain group and the variables to allocate come from that stage, so they are configured once.
+  writes to a `ZarrStore` (`PostProcStage.store` or `IngestStage.store`; no default: wrf-massive stays
+  project-agnostic). Store path, domain group and the variables to allocate come from that stage, so they are
+  configured once.
   - **Creating a domain needs one sim with output (template).** The stage's variable list gives names, but
     not dims, grid, levels or attrs, and postproc fns (e.g. Cn2) may return anything. If the first given sim has
     netCDF postproc output, its first file is the template (needed for nl/canaries, whose wrfout is deleted).
@@ -153,7 +154,7 @@ are two implementations of the same interface; the stage keeps reading and proce
   pipeline is loaded. In YAML: `store: {kind: zarr, path: ..., domain: ...}`.
   - `NetCDFStore(compression=True, file_suffix="proc", root=None)`: today's behaviour, the default. Files are in
     the stage's work dir, or in `<root>/<sim_name>/<work_dir>` if `root` is set (reading other workspaces).
-    Also readable: `inputs(s)` and frame-wise reading, used by `IngestStage`.
+    Also readable: `outputs(stage, s, work_dir)` and `read_frames(f, i0, n)` (lazy), used by `IngestStage`.
   - `ZarrStore(path, domain, tile=(64, 64), static_vars=[], encoding={})`: `static_vars` (e.g. `HGT`,
     `LANDMASK`) are written once at `init-domain`, compared at preflight and dropped from every frame by the
     writer; default empty so wrf-massive stays project-agnostic.
@@ -401,16 +402,22 @@ domains/alps$ wrf-massive submit --stages cn2 sim_*        # each job: preflight
 
 **[accepted]** Ingest is hours of I/O per domain (alps 4.2 TB), needs
 SLURM resources, runs per sim and resumes per file — exactly a stage. So `IngestStage(src=NetCDFStore(...),
-dst=ZarrStore(...))` in `pipeline.py`, run with `run`/`submit`; `is_done` = all frames `written`.
-`NetCDFStore(root=DIR)` reads `<DIR>/<sim_name>/4_postproc` instead of the sim's own work dir, which covers
-nl/canaries in the old prjs1785 workspaces (they stay read-only; no `--src-root` option, no symlinks).
+src_dir="4_postproc", store=ZarrStore(...))` in `pipeline.py`, run with `run`/`submit`; `is_done` = all frames
+`written`. The destination is called `store` like `PostProcStage.store` (`init-domain`, checks and writer are
+shared). `NetCDFStore(root=DIR)` reads `<DIR>/<sim_name>/<src_dir>` instead of the sim's own dir, which covers
+nl/canaries in the old prjs1785 workspaces (they stay read-only; no `--src-root` option, no symlinks). Each worker
+writes whole files, loading one variable at a time (`read_frames` is lazy).
+
+Measured (2026-11-20, local, nl `sim_2017-01-01`, 21 files, accepted encoding): 39 s with 8 workers, 12.3 GB
+netCDF → 5.11 GB in the store (−58 %), 625 inodes, 1.3 GB peak per worker; all errors within their bounds.
 
 ```python
 # domains/nl/pipeline.py (snellius)
 _ingest = IngestStage(
     work_dir="5_ingest",  # logs + sim lock only
     src=NetCDFStore(root="/projects/prjs1785/otprof/data/nl/wrf", file_suffix="cn2"),
-    dst=ZarrStore(path="/gpfs/work4/0/prjs0951/otprof.zarr", domain="nl", static_vars=["HGT", "LANDMASK"]),
+    store=ZarrStore(path="/gpfs/work4/0/prjs0951/otprof.zarr", domain="nl", static_vars=["HGT", "LANDMASK"]),
+    run_parallel=True,
     n_workers=8,
     resources=Resources(n_tasks=1, cpus_per_task=24, mem_per_cpu="1750M", walltime=...),
 )
@@ -484,9 +491,11 @@ wrf_massive/store/
 │   ├── layout.py   # names, dims, attrs, locks shared by init/write/read
 │   ├── init.py     # init-domain: create store/domain group, append sims (preallocation), lock
 │   ├── write.py    # session (preflight checks + sim lock), ZarrWriter, is_done
-│   ├── read.py     # (step 3) open domains, presence check against manifest, HEALPix helpers
-│   └── pull.py     # (step 3) rclone wrapper + manifest
+│   ├── read.py     # open_domain (sorted, restricted to a copy's manifest), hp_index, select_cells
+│   ├── verify.py   # store verify
+│   └── pull.py     # rclone wrapper + manifest
 ├── ingest.py   # IngestStage (NetCDFStore → ZarrStore)
+│   (zarr_store/verify.py: `store verify`; zarr_store/read.py: open_domain, hp_index, select_cells)
 └── (CLI)       # wrf-massive store init-domain | verify | pull
 ```
 
@@ -497,6 +506,12 @@ wrf_massive/store/
 - Parallel postproc workers are started with `spawn`, not `fork`: zarr runs IO threads in the parent, and forking
   a multi-threaded process can deadlock. Workers import the stage's module afresh (a workspace's `pipeline.py` is
   on `sys.path` after activation). Blosc runs single-threaded (process parallelism already uses the CPUs).
+- Scripts that run a stage with `run_parallel=True` need an `if __name__ == "__main__":` guard (spawned workers
+  re-import the main module); the `wrf-massive` CLI and notebooks need nothing.
+- `store pull` copies in two rclone passes: first the root and domain `zarr.json` and `sim_name` (to resolve
+  `--sims` names to positions), then the rest (`- *.partial`, `+ <paths>`, `- **` filter file); afterwards it
+  rebuilds the copy's consolidated metadata, so it lists only arrays that were copied, and merges the manifest
+  (`.wrf-massive-pull.json`). `--dry-run` still copies the small first pass and reports `rclone size` of the rest.
 - Readers open a domain group directly as a store (`xr.open_zarr("otprof.zarr/alps", consolidated=True)`):
   xarray's `group=` looks for consolidated metadata at the root, which the store deliberately does not have.
 - The ML loader (dataset/sampler) lives outside wrf-massive and only depends on `read.py`.

@@ -57,22 +57,26 @@ def run_cmd_logged(
     cwd: pathlib.Path | None = None,
     msg: str = "",
     env: dict | None = None,
-):
+    capture_stdout: bool = False,
+) -> str | None:
     """Run a command in `cwd` and log errors. `env`, if given, replaces the subprocess environment
-    (pass a full mapping, e.g. `{**os.environ, "N_CPUS": "8"}`)."""
+    (pass a full mapping, e.g. `{**os.environ, "N_CPUS": "8"}`). With `capture_stdout`, returns the command's stdout
+    instead of passing it through."""
 
     # Make all paths absolute
     cmd = [str(c.absolute()) if isinstance(c, pathlib.Path) else c for c in cmd]
 
     # Run command
     logger.debug("-> Running " + " ".join(cmd) + f" in {cwd if cwd else '.'}...")
-    p = subprocess.run(cmd, check=False, stderr=subprocess.PIPE, text=True, cwd=cwd, env=env)
+    stdout = subprocess.PIPE if capture_stdout else None
+    p = subprocess.run(cmd, check=False, stdout=stdout, stderr=subprocess.PIPE, text=True, cwd=cwd, env=env)
 
     # Check for errors and log them
     if p.returncode != 0:
         logger.error(f"Error ({p.returncode}) occured while {msg}:\n{p.stderr}")
         raise RuntimeError(f"Error ({p.returncode}) occured while {msg}. Check log for details.")
     logger.info(f"-> Ran {cmd[1]} successfully.")
+    return p.stdout if capture_stdout else None
 
 
 def get_namelist_value(namelist_path: str | pathlib.Path, field: str) -> str | List[str]:

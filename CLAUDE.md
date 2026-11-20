@@ -274,6 +274,13 @@ postproc).
    file's) + `fcntl` sim lock in the work dir; `ZarrWriter` maps frame times to lead indices, writes each variable's
    region and sets `written` last (commit); `is_done` = all input frames written. Blosc runs single-threaded.
    Readers open the domain dir as store (xarray's `group=` wants root consolidated metadata).
+   `store/ingest.py::IngestStage(src=NetCDFStore, src_dir, store=ZarrStore)` copies netCDF output into a store
+   (named `store` like `PostProcStage.store`, so init-domain/session/writer are shared; it provides `stored_vars(s)`
+   and `store_template(s)` from the files); workers write whole files via `NetCDFStore.read_frames` (lazy, expands the
+   scalar `time` of old single-frame files). `NetCDFStore.root` maps to `<root>/<sim name>/<work dir>`.
+   `zarr_store/read.py` (`open_domain` sorted by `sim_begin`, restricted to the manifest of a copy; `hp_index`,
+   `select_cells`), `verify.py` (`store verify`), `pull.py` (`store pull`: two rclone passes with filter files, then
+   re-consolidates the copy and merges `.wrf-massive-pull.json`). `run_cmd_logged(capture_stdout=True)` returns stdout.
    `tests/test_zarr_store.py` covers layout, matching netCDF output (serial/parallel), per-frame resume, encodings,
    the checks and the CLI (incl. a spawned parallel `run`).
 

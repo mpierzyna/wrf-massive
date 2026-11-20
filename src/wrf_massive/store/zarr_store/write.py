@@ -71,7 +71,7 @@ def session(cfg: ZarrStore, stage: Stage, s: Simulation, inputs: list[pathlib.Pa
     group = _open(cfg, stage.name)
 
     # 1. The domain matches the stage: same variables, static vars, tile and encodings as at init-domain
-    expected = set(stage.stored_vars()) - set(cfg.static_vars) - set(L.COORDS_2D)
+    expected = set(stage.stored_vars(s)) - set(cfg.static_vars) - set(L.COORDS_2D)
     have = set(L.data_vars(group))
     if expected != have:
         raise RuntimeError(
