@@ -65,6 +65,8 @@ def init_domain(stage: Stage, sims: list[Simulation], dry_run: bool = False) -> 
             spec = _DomainSpec(cfg, template, s_t)
             report.append(f"Domain '{cfg.domain}' does not exist -> creating from template {template.source}")
             report.append(f"-> {spec.summary()}")
+            if spec.unused_encoding:
+                report.append(f"-> encoding given for variables not in this domain's output: {spec.unused_encoding}")
             if not dry_run:
                 _create_domain(cfg, spec, template, s_t)
             existing, n_lead, interval = [], spec.n_lead, spec.interval_s
@@ -139,9 +141,11 @@ class _DomainSpec:
         missing_static = [v for v in cfg.static_vars if v not in ds.data_vars]
         if missing_static:
             raise ValueError(f"static_vars {missing_static} are not in the stage's output.")
-        unknown_enc = [v for v in cfg.encoding if v not in ds.data_vars or v in cfg.static_vars]
-        if unknown_enc:
-            raise ValueError(f"encoding given for {unknown_enc}, which are not time-dependent output variables.")
+        static_enc = [v for v in cfg.encoding if v in cfg.static_vars]
+        if static_enc:
+            raise ValueError(f"encoding given for static_vars {static_enc}, which are always stored lossless.")
+        # A project may share one encoding for the union of its domains' variables: absent ones are only reported
+        self.unused_encoding = [v for v in cfg.encoding if v not in ds.data_vars]
 
         self.data: dict[str, tuple[str, ...]] = {}  # name -> store dims
         self.static: list[str] = []

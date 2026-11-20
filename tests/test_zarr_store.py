@@ -128,10 +128,12 @@ def test_init_domain_dry_run_and_errors(tmp_path):
         init_domain(_stage(tmp_path, raw, stage_cls=PostProcStage, extract_vars=["EL_PBL"]), [s])
     with pytest.raises(ValueError, match="static_vars"):
         init_domain(_stage(tmp_path, ZarrStore(path=tmp_path / "x.zarr", domain="d", static_vars=["NOPE"])), [s])
-    with pytest.raises(ValueError, match="encoding given for"):
-        init_domain(
-            _stage(tmp_path, ZarrStore(path=tmp_path / "x.zarr", domain="d", encoding={"NOPE": Lossless()})), [s]
-        )
+    with pytest.raises(ValueError, match="encoding given for static_vars"):
+        enc_static = ZarrStore(path=tmp_path / "x.zarr", domain="d", static_vars=["HGT"], encoding={"HGT": Lossless()})
+        init_domain(_stage(tmp_path, enc_static), [s])
+    # One encoding for the union of a project's variables: absent ones are reported, not an error
+    union = ZarrStore(path=tmp_path / "u.zarr", domain="d", static_vars=STATIC, encoding={"QSQ": BitRound(keepbits=10)})
+    assert any("not in this domain's output: ['QSQ']" in line for line in init_domain(_stage(tmp_path, union), [s]))
 
     init_domain(stage, [s])
     longer = Simulation(

@@ -267,6 +267,9 @@ file instead of 602 MB netCDF (−59 %), nl ≈ 340 GB instead of 836 GB.
 - **[accepted] Fixed at `init-domain`**: written into each array's codec chain plus a readable `encoding` attr.
   Preflight raises if the stage's config differs from the stored codecs (changing it means rewriting the array);
   `init-domain` warns if another domain encodes the same variable differently.
+- A project may share one `encoding` for the union of its domains' variables: `init-domain` reports entries
+  for variables a domain does not output (e.g. `QSQ`/`COV` for nl) instead of failing; encodings for
+  `static_vars` raise (they are always lossless).
 - Readers other than zarr-python (tensorstore, zarrs) may not support numcodecs codecs; check before choosing a
   non-Python loader.
 
