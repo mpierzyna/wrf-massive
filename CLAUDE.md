@@ -25,9 +25,9 @@ use case).
   update it there by hand when that pin changes.
 - Formatting: `ruff format` (`uvx ruff format src tests`; line-length 120, see `[tool.ruff]` in `pyproject.toml`);
   submodules and `third_party/` are excluded. The `[tool.black]` section only keeps black consistent if run by accident.
-- `README.md` files (top-level, `src/wrf_massive/`, `src/wrf_massive/stages/`) are user-facing: describe
-  what a feature does and how to use it, not the underlying implementation mechanics. Implementation
-  details belong here in `CLAUDE.md` instead.
+- `README.md` files (top-level, `src/wrf_massive/`, `src/wrf_massive/stages/`, `src/wrf_massive/store/`) are
+  user-facing: describe what a feature does and how to use it, not the underlying implementation mechanics.
+  Implementation details belong here in `CLAUDE.md` instead (for the store also in `store/DESIGN.md`).
 
 ## Repository layout
 

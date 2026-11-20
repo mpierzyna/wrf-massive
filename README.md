@@ -130,6 +130,12 @@ symlink the one of the current machine to `env.yaml` (`ln -sf env_hpc.yaml env.y
 See the [developer guide](src/wrf_massive/README.md#workspaces) for what the files do and how to write your own
 stages.
 
+## Post-processing output
+
+Post-processing stages write netCDF files by default, or into a zarr store that holds many domains and is laid out
+for machine learning (parallel writes, partial copies, reading tiles of full columns). See the
+[store README](src/wrf_massive/store/README.md) for how to write, ingest existing output and read it.
+
 ## WRF and WPS
 
 wrf-massive does not compile WRF or WPS. Point your workspace's `env.yaml` to existing installations, e.g. a

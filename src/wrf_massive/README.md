@@ -217,37 +217,11 @@ Notes:
 - Postprocessing reads, processes and writes each `wrfout` file one time step (frame) at a time, appending to the
   output file, so the memory of a worker is set by the size of one frame, not by the number of frames per file.
   Postproc fns therefore see a single frame and must not combine time steps.
-- Where the output goes is set by the stage's `store`. The default, `NetCDFStore`, writes one compressed netCDF
-  file per `wrfout` file into the stage's work dir; options: `store=NetCDFStore(compression=False,
-  file_suffix="cn2")`. An output file only appears once it is complete, so a re-run continues with the missing files.
-- `ZarrStore` (needs the `store` extra) writes into one domain group of a zarr store that can hold many domains,
-  laid out for machine learning (design and benchmarks: `store/DESIGN.md`):
-
-  ```python
-  from wrf_massive.store.zarr_store import BitRound, FixedScaleOffset, ZarrStore
-
-  store = ZarrStore(
-      path="/project/otprof.zarr",  # shared by all domains; relative paths are relative to the workspace root
-      domain="alps",
-      static_vars=["HGT", "LANDMASK"],  # time-invariant: stored once
-      encoding={"th": FixedScaleOffset(offset=300, step=1e-3), "cn2": BitRound(keepbits=10)},  # default: lossless
-  )
-  ```
-
-  Before post-processing, lay out the domain and its sims once (metadata only, takes the layout from one processed
-  frame of the first given sim with output): `wrf-massive store init-domain --stage cn2 sim_*`. Running it again
-  appends new sims; in another workspace it adds that workspace's domain to the same store. Post-processing then
-  checks that the sim is initialized and its files fit the store before it writes anything, writes each frame
-  straight into the store and resumes per frame after a crash.
-- Existing netCDF output goes into a store with
-  `IngestStage(src=NetCDFStore(file_suffix="cn2"), store=ZarrStore(...))`, run with `run`/`submit` like any stage
-  (`NetCDFStore(root=...)` reads `<root>/<sim name>/4_postproc` of another workspace). Lay out its domain with
-  `store init-domain --stage <ingest stage>`; the template is the first netCDF file.
-- Reading: `wrf_massive.store.zarr_store.read.open_domain(path, "alps")` (sorted by sim begin; for a partial copy
-  only what it holds), HEALPix cells with `hp_index(ds, order)` / `select_cells(ds, cells, order)`.
-- `wrf-massive store verify --path <store>` (or `--stage`) reports sims, frames written and size per domain;
-  `wrf-massive store pull SRC DST --domain alps [--vars ...] [--sims ...] [--rclone-config ...]` copies part of a
-  store with rclone, e.g. from an HPC to a laptop.
+- Where the output goes is set by the stage's `store`: by default `NetCDFStore`, one compressed netCDF file per
+  `wrfout` file in the work dir (`store=NetCDFStore(compression=False, file_suffix="cn2")`); an output file only
+  appears once it is complete, so a re-run continues with the missing files. `ZarrStore` writes into a zarr store
+  for many domains, and `IngestStage` copies existing netCDF output into one: see the
+  [store README](store/README.md).
 - Scripts that run a stage with `run_parallel=True` need an `if __name__ == "__main__":` guard: workers are started
   with `spawn` and import the main module again.
 
