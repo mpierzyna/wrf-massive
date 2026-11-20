@@ -62,6 +62,9 @@ To use the postprocessing stages, add wrf-massive with the `postproc` extra inst
 uv add "wrf-massive[postproc] @ git+https://github.com/mpierzyna/wrf-massive@v2.3.0"
 ```
 
+Writing post-processed output into a zarr store (`ZarrStore`, see below) needs the `store` extra as well:
+`wrf-massive[postproc,store]`.
+
 Prefix the commands below with `uv run`, or activate the environment with `source .venv/bin/activate`.
 
 ### With pip
@@ -142,7 +145,8 @@ For development, this repository includes WRF and WPS as optional submodules in 
 git clone https://github.com/mpierzyna/wrf-massive && cd wrf-massive
 uv sync                   # install the package and its development dependencies
 uv sync --extra postproc  # ... including wrf-python for the postprocessing stages (needs a Fortran compiler)
-uv run pytest             # run the tests (the postprocessing tests are skipped without wrf-python)
+uv sync --extra postproc --extra store  # ... and zarr/healpy for the zarr store
+uv run pytest             # run the tests (postprocessing/store tests are skipped without wrf-python/zarr)
 ```
 
 Releases are made with `uvx bump-my-version bump patch|minor|major`, which updates the version, the citation

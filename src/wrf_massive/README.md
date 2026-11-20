@@ -220,6 +220,26 @@ Notes:
 - Where the output goes is set by the stage's `store`. The default, `NetCDFStore`, writes one compressed netCDF
   file per `wrfout` file into the stage's work dir; options: `store=NetCDFStore(compression=False,
   file_suffix="cn2")`. An output file only appears once it is complete, so a re-run continues with the missing files.
+- `ZarrStore` (needs the `store` extra) writes into one domain group of a zarr store that can hold many domains,
+  laid out for machine learning (design and benchmarks: `store/DESIGN.md`):
+
+  ```python
+  from wrf_massive.store.zarr_store import BitRound, FixedScaleOffset, ZarrStore
+
+  store = ZarrStore(
+      path="/project/otprof.zarr",  # shared by all domains; relative paths are relative to the workspace root
+      domain="alps",
+      static_vars=["HGT", "LANDMASK"],  # time-invariant: stored once
+      encoding={"th": FixedScaleOffset(offset=300, step=1e-3), "cn2": BitRound(keepbits=10)},  # default: lossless
+  )
+  ```
+
+  Before post-processing, lay out the domain and its sims once (metadata only, takes the layout from one processed
+  frame of the first given sim with output): `wrf-massive store init-domain --stage cn2 sim_*`. Running it again
+  appends new sims; in another workspace it adds that workspace's domain to the same store. Post-processing then
+  checks that the sim is initialized and its files fit the store before it writes anything, writes each frame
+  straight into the store and resumes per frame after a crash. Open a domain with
+  `xr.open_zarr("/project/otprof.zarr/alps", consolidated=True)`.
 
 See `stages/README.md` for a short overview of the four pipeline steps.
 

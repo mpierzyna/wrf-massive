@@ -6,7 +6,7 @@
 
 A store model is configuration only: it is validated with the pipeline, serialized to YAML and pickled to the
 post-processing workers. Runtime state (open files, temp files, locks) lives in a `Writer`, created per input file
-inside the worker by `PostProcStore.writer`.
+inside the worker by `PostProcStore.writer`; checks and locks for a whole simulation live in `PostProcStore.session`.
 """
 
 from __future__ import annotations
@@ -43,8 +43,11 @@ class PostProcStore(pydantic.BaseModel, abc.ABC):
 
     kind: str
 
-    def preflight(self, stage: Stage, s: Simulation, inputs: list[pathlib.Path]) -> None:
-        """Check before any input is processed that everything can be written. Runs once, in the parent process."""
+    @contextlib.contextmanager
+    def session(self, stage: Stage, s: Simulation, inputs: list[pathlib.Path]) -> Iterator[None]:
+        """Context around processing all `inputs` of simulation `s`, entered once in the parent process before any
+        input is processed: checks that everything can be written (fail fast) and holds locks for the whole run."""
+        yield
 
     @abc.abstractmethod
     def is_done(self, stage: Stage, s: Simulation, inputs: list[pathlib.Path]) -> bool:

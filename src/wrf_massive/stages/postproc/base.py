@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import datetime
+import multiprocessing
 import os
 import pathlib
 import re
 import shutil
-from typing import Callable, Dict, List, Self
+from typing import Annotated, Callable, Dict, List, Self
 
 import numpy as np
 import pydantic
@@ -23,11 +24,16 @@ from wrf_massive.log import get_logger
 from wrf_massive.stages.postproc.iofields import parse_myoutfields
 from wrf_massive.stages.postproc.variables import REQUIRED_WRF_FIELDS, TVarList, var_name, wrf_fields_of
 from wrf_massive.stages.postproc.wrfout import load_wrfout, n_frames
+from wrf_massive.store.frames import FrameTemplate, frame_times
 from wrf_massive.store.netcdf import NetCDFStore
+from wrf_massive.store.zarr_store.store import ZarrStore
 
 logger = get_logger("stages.postproc")
 
 STAGE_DIR = pathlib.Path(os.path.dirname(__file__))
+
+# Where post-processed output can go; configs pick one by its `kind`
+TStore = Annotated[NetCDFStore | ZarrStore, pydantic.Field(discriminator="kind")]
 
 
 class PostProcFn(pydantic.BaseModel):
@@ -72,7 +78,7 @@ class PostProcStage(Stage):
     iofields_stream: int = 7  # history stream of the post-processed `wrfout_aux` files (auxhist7)
 
     # Where the output goes; the stage only reads and processes
-    store: NetCDFStore = pydantic.Field(default_factory=NetCDFStore)
+    store: TStore = pydantic.Field(default_factory=NetCDFStore)
 
     run_parallel: bool = False  # whether to run in parallel using multiprocessing
     # Number of parallel workers. None uses all allocated CPUs (`resources.cpus_total`). Set it lower to give each
@@ -230,14 +236,19 @@ class PostProcStage(Stage):
     def run(self, s: Simulation):
         # Deduplicate defensively: two workers writing the same output file corrupt it / fail on file locking
         inputs = list(dict.fromkeys(self.get_inputs(s)))
-        self.store.preflight(self, s, inputs)  # fail before any processing if the output cannot be written
+        with self.store.session(self, s, inputs):  # checks (fail before any processing) and locks
+            self._run_inputs(s, inputs)
 
+    def _run_inputs(self, s: Simulation, inputs: List[pathlib.Path]):
         if self.run_parallel:
             # Parallel run
             # `resources` guaranteed to exist by `ensure_resources_for_parallel`
             n_workers = self.n_workers or self.resources.cpus_total
             logger.info(f"Starting parallel post-processing of {len(inputs)} file(s) with {n_workers} workers...")
-            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as ex:
+            # Spawn, not fork: by now the parent may run threads (e.g. zarr's IO threads), and forking a
+            # multi-threaded process can deadlock the children. Workers import the stage's module afresh.
+            ctx = multiprocessing.get_context("spawn")
+            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as ex:
                 futures = [ex.submit(self.run_single, s, f) for f in inputs]
 
                 # Collect all failures instead of raising the first one: the pool waits for every queued
@@ -294,10 +305,7 @@ class PostProcStage(Stage):
             for name, data in new_vars.items():
                 ds[name] = data
 
-        # Select only vars requested explicitly OR returned by the stage's own postproc fns
-        keep = [var_name(v) for v in self.extract_vars]
-        keep += [name for fn in self.postproc_fns for name in fn.returns]
-        ds = ds[list(dict.fromkeys(keep))]
+        ds = ds[self.stored_vars()]
 
         # Variables read are float32 already (see `read_var`); this catches postproc fn results computed in float64.
         for v in ds.data_vars:
@@ -307,6 +315,30 @@ class PostProcStage(Stage):
         logger.debug(ds.sizes)
         logger.debug(ds.dtypes)
         return ds
+
+    def stored_vars(self) -> List[str]:
+        """Names of the variables in the output: requested explicitly OR returned by the stage's postproc fns."""
+        keep = [var_name(v) for v in self.extract_vars]
+        keep += [name for fn in self.postproc_fns for name in fn.returns]
+        return list(dict.fromkeys(keep))
+
+    def store_template(self, s: Simulation) -> FrameTemplate | None:
+        """One processed frame of `s` and its file structure, from which a store lays out a domain (None: no input
+        files yet). Costs processing one frame."""
+        try:
+            inputs = self.get_inputs(s)
+        except FileNotFoundError:
+            return None
+        times = [frame_times(f) for f in inputs]
+        steps = [t[1] - t[0] for t in times if len(t) > 1]
+        if not steps:
+            raise ValueError(f"No input file of {s.name} has two frames to take the output interval from.")
+        return FrameTemplate(
+            ds=self._process_frame(inputs[0], 0),
+            frames_per_file=max(len(t) for t in times),
+            interval=steps[0],
+            source=inputs[0],
+        )
 
     def is_done(self, s: Simulation) -> bool:
         try:

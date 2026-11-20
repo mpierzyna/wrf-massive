@@ -441,6 +441,38 @@ def submit(
             )
 
 
+@main.group("store")
+def store_group():
+    """Zarr store of post-processed output of many domains (needs the `store` extra)."""
+
+
+@store_group.command("init-domain")
+@click.option("--stage", "stage_name", required=True, help="Stage in pipeline.py that writes to a ZarrStore.")
+@click.argument("sim_dirs", type=click.Path(exists=True, file_okay=False), nargs=-1)
+@pass_state
+def store_init_domain(state: CliState, stage_name: str, sim_dirs: Tuple[str, ...]):
+    """Add the domain of the given postproc stage and the given sims to the store.
+
+    Creates a new store if this is the first domain, appends the domain to an existing store otherwise, and appends
+    sims not yet in the domain. Creating a domain takes its layout from one processed frame of the first given sim
+    with output. Only metadata is written; no space is reserved. With `wrf-massive --debug`, only prints what would
+    be done.
+    """
+    sim_dirs = _require_sim_dirs(sim_dirs)
+    p = state.pipeline
+    if stage_name not in p.stages:
+        raise click.UsageError(f"Unknown stage '{stage_name}'. Stages of the pipeline: {list(p.stages)}.")
+    from wrf_massive.store.zarr_store.init import init_domain  # needs zarr: only here
+
+    sims = [Simulation.from_disk(d) for d in sim_dirs]
+    try:
+        report = init_domain(p[stage_name], sims, dry_run=state.debug)
+    except (ValueError, RuntimeError) as e:
+        raise click.ClickException(str(e)) from e
+    for line in report:
+        click.echo(line)
+
+
 @main.group()
 def plot():
     """Plot WPS domains and simulation timelines. Works without a workspace."""

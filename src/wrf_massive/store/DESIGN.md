@@ -86,7 +86,7 @@ otprof.zarr/
   - **Appending needs no WRF output**: only `simulation.yaml` (`sim_name`, `begin`/`end`, settings), so all sims
     of a domain can be initialized right after the first one finished WRF. Sims already present are skipped
     (idempotent). Raises if `end - begin` differs from the domain's lead time range. The grid check against
-    the static fields moves to the preflight check at postproc start, where the aux files exist.
+    the static fields moves to the preflight check at postproc start (`session`), where the aux files exist.
   - Metadata only, no space reserved: an empty alps group with 3 full-size 3D arrays (0.4 TB logical each) is
     4.7 KB on disk; data appears only as frames are written (verified with zarr 3.4.2). Only `init-domain`
     touches metadata; workers only write chunk data.
@@ -118,7 +118,7 @@ otprof.zarr/
   tiles). Edge tiles are stored padded with NaN (cheap after compression); tiles fully outside the grid do not
   exist.
 
-### Preflight check at postproc start
+### Preflight check at postproc start (`PostProcStore.session`)
 
 **[accepted]** Before any frame is processed (fail fast, nothing written), the zarr backend checks:
 
@@ -162,7 +162,7 @@ are two implementations of the same interface; the stage keeps reading and proce
 
   ```python
   class PostProcStore(pydantic.BaseModel, abc.ABC):
-      def preflight(self, stage, s, inputs) -> None          # parent, before the pool (zarr: checks + sim lock)
+      def session(self, stage, s, inputs) -> ContextManager  # parent, around the pool (zarr: checks + sim lock)
       def is_done(self, s, inputs) -> bool                   # PostProcStage.is_done delegates here
       def writer(self, stage, s, f) -> ContextManager[Writer]  # one per input file, in the worker
 
@@ -376,9 +376,10 @@ Usage: wrf-massive store init-domain [OPTIONS] SIM_DIRS...
   the first domain, appends the domain to an existing store otherwise, and appends sims not yet in the domain.
 
 Options:
-  --stage NAME  Postproc stage in pipeline.py whose `store` is a ZarrStore.  [required]
-  --debug       Print what would be created/appended, write nothing.
+  --stage NAME  Stage in pipeline.py that writes to a ZarrStore.  [required]
 ```
+
+`wrf-massive --debug store init-domain ...` only prints what would be done (the global `--debug`, as for `submit`).
 
 ```
 domains/alps$ wrf-massive store init-domain --stage cn2 sim_*
@@ -474,14 +475,17 @@ laptop$ wrf-massive store pull snellius:/gpfs/work4/0/prjs0951/otprof.zarr ~/dat
 
 ```
 wrf_massive/store/
-├── base.py     # PostProcStore, Writer
+├── base.py     # PostProcStore (session, is_done, writer), Writer
+├── frames.py   # frame times of input files, lead time indices, FrameTemplate (no zarr needed)
 ├── netcdf.py   # NetCDFStore (today's netCDF writing, moved from stages/postproc/base.py)
-├── zarr/       # ZarrStore; zarr imported lazily so configs load without the `store` extra
-│   ├── schema.py   # domain schema (vars, dims, chunks, shards, encoding)
+├── zarr_store/ # not `zarr/`, to never shadow the zarr package; zarr imported only when used
+│   ├── encoding.py # Lossless, BitRound, FixedScaleOffset (pydantic) -> zarr codecs
+│   ├── store.py    # ZarrStore config, delegates to the modules below
+│   ├── layout.py   # names, dims, attrs, locks shared by init/write/read
 │   ├── init.py     # init-domain: create store/domain group, append sims (preallocation), lock
-│   ├── write.py    # preflight check, writer: frames → region [sim, t0:t0+n] per variable, commit mask
-│   ├── read.py     # open domains, presence check against manifest, HEALPix helpers
-│   └── pull.py     # rclone wrapper + manifest
+│   ├── write.py    # session (preflight checks + sim lock), ZarrWriter, is_done
+│   ├── read.py     # (step 3) open domains, presence check against manifest, HEALPix helpers
+│   └── pull.py     # (step 3) rclone wrapper + manifest
 ├── ingest.py   # IngestStage (NetCDFStore → ZarrStore)
 └── (CLI)       # wrf-massive store init-domain | verify | pull
 ```
@@ -490,6 +494,11 @@ wrf_massive/store/
   version whose partial-shard and atomic-write behaviour was checked. rclone is an external
   binary (as for `PullCerraStage`).
 - `PostProcStage.store: NetCDFStore | ZarrStore = NetCDFStore()`.
+- Parallel postproc workers are started with `spawn`, not `fork`: zarr runs IO threads in the parent, and forking
+  a multi-threaded process can deadlock. Workers import the stage's module afresh (a workspace's `pipeline.py` is
+  on `sys.path` after activation). Blosc runs single-threaded (process parallelism already uses the CPUs).
+- Readers open a domain group directly as a store (`xr.open_zarr("otprof.zarr/alps", consolidated=True)`):
+  xarray's `group=` looks for consolidated metadata at the root, which the store deliberately does not have.
 - The ML loader (dataset/sampler) lives outside wrf-massive and only depends on `read.py`.
 
 ## Other open questions

@@ -35,6 +35,9 @@ dependencies = [
 [project.optional-dependencies]
 # Postprocessing stages (stages/postproc, e.g. Cn2PostProcStage) need wrf-python, which requires a Fortran compiler
 postproc = ["wrf-python"]
+# Zarr store of post-processed output (wrf_massive.store.zarr_store); zarr pinned to the version whose partial-shard
+# writes and atomic local writes were checked (see store/DESIGN.md)
+store = ["zarr>=3.4.2", "healpy>=1.18"]
 
 [project.scripts]
 wrf-massive = "wrf_massive.cli:main"

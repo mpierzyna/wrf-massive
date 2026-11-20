@@ -51,8 +51,9 @@ src/wrf_massive/        # generic, project-agnostic orchestration package
     postproc/             # postprocessing of WRF output (e.g. Cn2)
     misc/                 # small utility stages (array.py, done.py, gc.py)
     utils.py               # render_template, run_cmd_logged, namelist template loader/getter
-  store/                  # where postproc output goes: base.py (PostProcStore, Writer), netcdf.py (NetCDFStore);
-                          #   zarr store for ML training in progress (design in DESIGN.md)
+  store/                  # where postproc output goes (design in store/DESIGN.md): base.py (PostProcStore, Writer),
+                          #   frames.py (frame times), netcdf.py (NetCDFStore), zarr_store/ (ZarrStore: encoding,
+                          #   store, layout, init = init-domain, write = session/writer/is_done)
   templates/workspace/    # files copied by `wrf-massive init` (the reference for how to build a workspace)
     env.tmpl.yaml          # -> env_local.yaml (+ symlink env.yaml): WPS/WRF paths (placeholders), pipeline, log_level
     gitignore              # -> .gitignore
@@ -254,7 +255,27 @@ postproc).
    int64 `seconds since <t0>`, one chunk per frame, zlib if `compression`), later frames appended in place by
    `_append_frames` (h5netcdf `resize_dimension`), all into a hidden temp file renamed on commit; an existing
    output means the file is complete, so `pending_frames` returns `[]`. `tests/test_netcdf_store.py` covers the
-   writer on synthetic frames (no wrf-python).
+   writer on synthetic frames (no wrf-python). `store` is a `TStore` (discriminated union NetCDFStore | ZarrStore).
+   Parallel workers use the `spawn` start method (not fork): zarr's IO/asyncio threads live in the parent once
+   `session` ran, and forking a multi-threaded process can deadlock; so stages and postproc fns must be importable
+   by module name (a workspace's `pipeline.py` is, being on `sys.path` after activation).
+   **`ZarrStore`** (`store/zarr_store/`, `store` extra = zarr pinned >= 3.4.2 + healpy; zarr only imported when
+   used, so configs load without it): `init.py::init_domain(stage, sims, dry_run)` (CLI `wrf-massive store
+   init-domain --stage NAME SIM_DIRS`, global `--debug` = dry run) creates the root (`schema_version`) and the domain
+   group from `stage.store_template(s)` (`FrameTemplate`: one `_process_frame`, frames per file = shard length,
+   interval), then appends sims by resizing `sim` (metadata only) and re-consolidates the domain group (never the
+   root); per-domain `fcntl` lock next to the store. Arrays: data `(sim, lead_time[, bottom_top], y, x)` float32,
+   chunks `(1, 1[, nz], ty, tx)`, shards `(1, shard_len[, nz], ceil-to-tile y, x)`, `.` chunk-key separator, fill
+   NaN, codecs from `encoding.py` (attrs `encoding` = config, compared at preflight); static `XLAT`/`XLONG`/
+   `static_vars`/`hp_ipix` (order 23); `lead_time` (int seconds, xarray decodes timedelta), `time`, `sim_name`,
+   `sim_begin`, `sim_settings` (JSON), `written` mask chunked `(1, shard_len)`. `write.py::session` = preflight
+   (variables == `stage.stored_vars()` minus static/coords, static_vars, tile, encodings, sim initialized, input
+   files on the lead grid, after `begin`, aligned with shards, no shard twice, `XLAT`/`XLONG`/static equal to the
+   file's) + `fcntl` sim lock in the work dir; `ZarrWriter` maps frame times to lead indices, writes each variable's
+   region and sets `written` last (commit); `is_done` = all input frames written. Blosc runs single-threaded.
+   Readers open the domain dir as store (xarray's `group=` wants root consolidated metadata).
+   `tests/test_zarr_store.py` covers layout, matching netCDF output (serial/parallel), per-frame resume, encodings,
+   the checks and the CLI (incl. a spawned parallel `run`).
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
 `StageArray` runs several substages inside one job (one SLURM allocation). It overrides `tmp_work_dir` only:

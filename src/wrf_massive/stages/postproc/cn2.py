@@ -11,7 +11,7 @@ import pydantic
 import xarray as xr
 
 from wrf_massive.stages.postproc import PostProcFn, PostProcStage
-from wrf_massive.stages.postproc.base import TVarList
+from wrf_massive.stages.postproc.base import TStore, TVarList
 from wrf_massive.store.netcdf import NetCDFStore
 
 
@@ -80,4 +80,4 @@ class Cn2PostProcStage(PostProcStage):
 
     extract_vars: TVarList = []
     postproc_fns: List[PostProcFn] = [fn_ct2_cn2]
-    store: NetCDFStore = pydantic.Field(default_factory=lambda: NetCDFStore(file_suffix="cn2"))
+    store: TStore = pydantic.Field(default_factory=lambda: NetCDFStore(file_suffix="cn2"))
