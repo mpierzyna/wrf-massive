@@ -51,6 +51,7 @@ src/wrf_massive/        # generic, project-agnostic orchestration package
     postproc/             # postprocessing of WRF output (e.g. Cn2)
     misc/                 # small utility stages (array.py, done.py, gc.py)
     utils.py               # render_template, run_cmd_logged, namelist template loader/getter
+  store/                  # zarr store of postproc output of all domains for ML training (empty; design in DESIGN.md)
   templates/workspace/    # files copied by `wrf-massive init` (the reference for how to build a workspace)
     env.tmpl.yaml          # -> env_local.yaml (+ symlink env.yaml): WPS/WRF paths (placeholders), pipeline, log_level
     gitignore              # -> .gitignore
