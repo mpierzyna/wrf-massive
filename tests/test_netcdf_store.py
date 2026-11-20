@@ -70,25 +70,19 @@ def test_framewise_and_multiframe_writes_give_the_same_file(tmp_path, compressio
         assert store.is_done(stage, None, [INPUT])
 
 
-def test_failure_leaves_no_output(tmp_path):
-    """A failure mid-file leaves neither an output nor a temp file, so a re-run starts the file again."""
-    store, stage = NetCDFStore(), _Stage(tmp_path)
-    with pytest.raises(RuntimeError, match="processing failed"):
-        _write(store, stage, _frames(), [1, 1, 1, 1], fail_at=2)
-    assert not list(tmp_path.iterdir())
-    assert not store.is_done(stage, None, [INPUT])
-
-
-def test_incomplete_or_unordered_writes_raise(tmp_path):
-    """Leaving the writer with frames missing, or writing frames out of order, is an error and writes nothing."""
+def test_failed_or_incomplete_writes_leave_no_output(tmp_path):
+    """A failure mid-file, leaving the writer with frames missing, or writing frames out of order: an error, and
+    neither an output nor a temp file remains, so a re-run starts the file again."""
     store, stage, ds = NetCDFStore(), _Stage(tmp_path), _frames()
+    with pytest.raises(RuntimeError, match="processing failed"):
+        _write(store, stage, ds, [1, 1, 1, 1], fail_at=2)
     with pytest.raises(RuntimeError, match="only 2 of 4 frames"), store.writer(stage, None, INPUT) as w:
         w.pending_frames(N)
         w.write(ds.isel(time=slice(0, 2)), 0)
     with pytest.raises(ValueError, match="expected frame 0, got 1"), store.writer(stage, None, INPUT) as w:
         w.pending_frames(N)
         w.write(ds.isel(time=slice(1, 2)), 1)
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.iterdir()) and not store.is_done(stage, None, [INPUT])
 
 
 def test_existing_output_is_skipped(tmp_path):

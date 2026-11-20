@@ -25,18 +25,20 @@ def read_manifest(path: pathlib.Path) -> dict | None:
     return json.loads(f.read_text()) if f.exists() else None
 
 
-def open_domain(path: str | pathlib.Path, domain: str, sort: bool = True) -> xr.Dataset:
+def open_domain(path: str | pathlib.Path, domain: str, sort: bool = True, **open_kwargs) -> xr.Dataset:
     """A domain of a store as lazy xarray dataset, sorted by `sim_begin` (stable) unless `sort=False`.
 
     For a partial copy, only the sims and variables it holds are in the dataset, so asking for anything else raises
-    instead of returning NaN. Only frames with `written=True` hold data.
+    instead of returning NaN. Only frames with `written=True` hold data. `open_kwargs` go to `xr.open_zarr`, e.g.
+    `chunks=None` for lazy arrays without dask (each access reads through zarr directly).
     """
     path = pathlib.Path(path)
     if not (path / domain / "zarr.json").exists():
         raise KeyError(f"Domain '{domain}' is not in {path}" + _copy_hint(path))
     with warnings.catch_warnings():  # zarr: consolidated metadata is not in the v3 spec yet
         warnings.filterwarnings("ignore", message="Consolidated metadata is currently not part")
-        ds = xr.open_zarr(path / domain, consolidated=True)  # the group dir itself: no root consolidated metadata
+        # The group dir itself: there is no root consolidated metadata
+        ds = xr.open_zarr(path / domain, **({"consolidated": True} | open_kwargs))
 
     manifest = read_manifest(path)
     if manifest is not None:

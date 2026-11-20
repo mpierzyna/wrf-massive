@@ -285,8 +285,10 @@ postproc).
    `zarr_store/read.py` (`open_domain` sorted by `sim_begin`, restricted to the manifest of a copy; `hp_index`,
    `select_cells`), `verify.py` (`store verify`), `pull.py` (`store pull`: two rclone passes with filter files, then
    re-consolidates the copy and merges `.wrf-massive-pull.json`). `run_cmd_logged(capture_stdout=True)` returns stdout.
-   `tests/test_zarr_store.py` covers layout, matching netCDF output (serial/parallel), per-frame resume, encodings,
-   the checks and the CLI (incl. a spawned parallel `run`).
+   `tests/test_zarr_store.py` shares one written store (module fixture `written`: 2 sims, serial + parallel, lossy
+   encodings, netCDF reference in an old-workspace layout) for writing, ingest, pull, verify and CLI tests; tests
+   that change a store use their own or a copy. Open stores in tests with `open_domain(..., chunks=None)` (dask
+   over the tiny test chunks is slow).
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
 `StageArray` runs several substages inside one job (one SLURM allocation). It overrides `tmp_work_dir` only:
