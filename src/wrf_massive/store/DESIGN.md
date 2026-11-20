@@ -407,7 +407,7 @@ nl/canaries in the old prjs1785 workspaces (they stay read-only; no `--src-root`
 ```python
 # domains/nl/pipeline.py (snellius)
 _ingest = IngestStage(
-    work_dir="5_ingest",                                 # logs + sim lock only
+    work_dir="5_ingest",  # logs + sim lock only
     src=NetCDFStore(root="/projects/prjs1785/otprof/data/nl/wrf", file_suffix="cn2"),
     dst=ZarrStore(path="/gpfs/work4/0/prjs0951/otprof.zarr", domain="nl", static_vars=["HGT", "LANDMASK"]),
     n_workers=8,

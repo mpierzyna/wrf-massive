@@ -217,6 +217,9 @@ Notes:
 - Postprocessing reads, processes and writes each `wrfout` file one time step (frame) at a time, appending to the
   output file, so the memory of a worker is set by the size of one frame, not by the number of frames per file.
   Postproc fns therefore see a single frame and must not combine time steps.
+- Where the output goes is set by the stage's `store`. The default, `NetCDFStore`, writes one compressed netCDF
+  file per `wrfout` file into the stage's work dir; options: `store=NetCDFStore(compression=False,
+  file_suffix="cn2")`. An output file only appears once it is complete, so a re-run continues with the missing files.
 
 See `stages/README.md` for a short overview of the four pipeline steps.
 

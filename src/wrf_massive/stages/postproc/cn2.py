@@ -7,10 +7,12 @@ from __future__ import annotations
 from typing import Dict, List
 
 import numpy as np
+import pydantic
 import xarray as xr
 
 from wrf_massive.stages.postproc import PostProcFn, PostProcStage
 from wrf_massive.stages.postproc.base import TVarList
+from wrf_massive.store.netcdf import NetCDFStore
 
 
 def _get_ct2_hb15(*, var_theta, Lm):
@@ -78,4 +80,4 @@ class Cn2PostProcStage(PostProcStage):
 
     extract_vars: TVarList = []
     postproc_fns: List[PostProcFn] = [fn_ct2_cn2]
-    file_suffix: str = "cn2"
+    store: NetCDFStore = pydantic.Field(default_factory=lambda: NetCDFStore(file_suffix="cn2"))

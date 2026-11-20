@@ -25,12 +25,13 @@ from wrf_massive.stages.postproc.iofields import parse_myoutfields
 from wrf_massive.stages.postproc.precip import fn_int_water_paths
 from wrf_massive.stages.postproc.variables import DERIVED_VARS, REQUIRED_WRF_FIELDS, var_name, wrf_fields_of
 from wrf_massive.stages.postproc.wrfout import load_wrfout
+from wrf_massive.store.netcdf import NetCDFStore
 
 # --- Helpers over the wrfout fixtures -------------------------------------------------------------------------------
 # The fixtures differ in which fields WRF wrote (see fixtures.py). Tests take what they need from the fixtures'
 # contents instead of naming a particular setup, so they hold for any WRF output configuration.
 
-_STAGE_KWARGS = dict(work_dir="/tmp", wrfout_dir="x", domain=1, compression=False)
+_STAGE_KWARGS = dict(work_dir="/tmp", wrfout_dir="x", domain=1)
 _RESOURCES = Resources(n_tasks=2, cpus_per_task=1, mem_per_cpu="1G")
 _FN_A = PostProcFn(fn=lambda ds: {"a": ds["tk"] * 2}, requires=["tk"], returns=["a"])
 _FN_B = PostProcFn(fn=lambda ds: {"b": ds["a"] + 1}, requires=["a"], returns=["b"])
@@ -88,11 +89,15 @@ def _simulation(fixture_dir: pathlib.Path = WRFOUT_DIR) -> Simulation:
 
 
 def _run(work_dir: pathlib.Path, fixture_dir: pathlib.Path = WRFOUT_DIR, stage_cls=Cn2PostProcStage, **kwargs):
-    """Run a postproc stage over a fixture into `work_dir`; return the stage and its outputs."""
+    """Run a postproc stage over a fixture into `work_dir` (uncompressed unless `compression=True`, otherwise the
+    stage class's default store); return the stage and its outputs."""
     work_dir.mkdir(parents=True, exist_ok=True)
-    pp = stage_cls(work_dir=work_dir, wrfout_dir=fixture_dir.name, domain=1, **({"compression": False} | kwargs))
-    pp.run(_simulation(fixture_dir))
-    return pp, sorted(work_dir.glob(f"*{pp.file_suffix}.nc"))
+    store = stage_cls.model_fields["store"].get_default(call_default_factory=True)
+    store = store.model_copy(update={"compression": kwargs.pop("compression", False)})
+    pp = stage_cls(work_dir=work_dir, wrfout_dir=fixture_dir.name, domain=1, store=store, **kwargs)
+    s = _simulation(fixture_dir)
+    pp.run(s)
+    return pp, pp.store.outputs(pp, s)
 
 
 # --- Inputs and reading --------------------------------------------------------------------------------------------
@@ -259,7 +264,7 @@ def test_stage_fully_executed(tmp_path):
             work_dir=tmp_path / fixture_dir.name,
             wrfout_dir=fixture_dir.name,
             domain=1,
-            compression=False,
+            store=NetCDFStore(file_suffix="cn2", compression=False),
             extract_vars=_readable_vars(fixture_dir),
             postproc_fns=postproc_fns,
             myoutfields_path=_write_myoutfields(tmp_path, fields),
@@ -271,7 +276,7 @@ def test_stage_fully_executed(tmp_path):
         pp.run(s)
         assert pp.is_done(s)
 
-        inputs, outputs = pp.get_inputs(s), sorted(pp.get_work_dir(s).glob(f"*{pp.file_suffix}.nc"))
+        inputs, outputs = pp.get_inputs(s), pp.store.outputs(pp, s)
         assert len(outputs) == len(inputs) == 2
 
         expected = {var_name(v) for v in pp.extract_vars} | {name for fn in postproc_fns for name in fn.returns}

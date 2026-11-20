@@ -51,7 +51,8 @@ src/wrf_massive/        # generic, project-agnostic orchestration package
     postproc/             # postprocessing of WRF output (e.g. Cn2)
     misc/                 # small utility stages (array.py, done.py, gc.py)
     utils.py               # render_template, run_cmd_logged, namelist template loader/getter
-  store/                  # zarr store of postproc output of all domains for ML training (empty; design in DESIGN.md)
+  store/                  # where postproc output goes: base.py (PostProcStore, Writer), netcdf.py (NetCDFStore);
+                          #   zarr store for ML training in progress (design in DESIGN.md)
   templates/workspace/    # files copied by `wrf-massive init` (the reference for how to build a workspace)
     env.tmpl.yaml          # -> env_local.yaml (+ symlink env.yaml): WPS/WRF paths (placeholders), pipeline, log_level
     gitignore              # -> .gitignore
@@ -240,11 +241,20 @@ postproc).
    (`load_wrfout(..., timeidx=i)`; `read_var` re-adds the `Time` dim wrf-python drops for a single frame), applies the
    postproc fns (so they must be time-local), keeps the stored vars and casts float64 fn results to float32
    (`read_var` always returns float32: wrf-python's float64 is a double-precision computation artefact; there is no
-   option for float64 output). Frame 0 is written with
-   `to_netcdf(unlimited_dims=["time"])` and an encoding from `_encoding` (time as int64 `seconds since <t0>`, one
-   chunk per frame, zlib if `compression`); later frames are appended in place by `_append_frame` (h5netcdf
-   `resize_dimension`). `timeidx=None` processes all frames at once; `test_framewise_output_matches_whole_file`
-   checks that both give identical files.
+   option for float64 output). `timeidx=None` processes all frames at once;
+   `test_framewise_output_matches_whole_file` checks that both give identical files.
+   **Writing is the job of `store`** (`wrf_massive/store/`, design in `store/DESIGN.md`): the stage only reads and
+   processes. `PostProcStore` (pydantic, `extra="forbid"`, discriminated by `kind`) is configuration only, pickled
+   to the workers; `store.preflight(stage, s, inputs)` runs once in the parent before the pool, `store.is_done`
+   backs `PostProcStage.is_done`, and `store.writer(stage, s, f)` is a context manager yielding a `Writer` per input
+   file in the worker: `pending_frames(n)` says which frames to process, `write(ds, i0)` takes one or more
+   consecutive frames, leaving the context without an exception commits. `NetCDFStore(compression, file_suffix)`
+   (default of `PostProcStage`; `Cn2PostProcStage` defaults to `file_suffix="cn2"`) writes `<input>_<suffix>.nc`
+   into the work dir: frame(s) at `i0 == 0` with `to_netcdf(unlimited_dims=["time"])` and `_encoding` (time as
+   int64 `seconds since <t0>`, one chunk per frame, zlib if `compression`), later frames appended in place by
+   `_append_frames` (h5netcdf `resize_dimension`), all into a hidden temp file renamed on commit; an existing
+   output means the file is complete, so `pending_frames` returns `[]`. `tests/test_netcdf_store.py` covers the
+   writer on synthetic frames (no wrf-python).
 
 `stages/misc/` has small standalone stages: `MarkDone` (writes `.done`), plus `array.py`/`gc.py` helpers.
 `StageArray` runs several substages inside one job (one SLURM allocation). It overrides `tmp_work_dir` only:
