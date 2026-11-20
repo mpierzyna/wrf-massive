@@ -15,13 +15,29 @@ import abc
 import contextlib
 import pathlib
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import pydantic
 import xarray as xr
 
 if TYPE_CHECKING:
     from wrf_massive.base import Simulation, Stage
+    from wrf_massive.store.frames import FrameTemplate
+
+
+class StoreStage(Protocol):
+    """What a store needs from a stage that writes into it (`PostProcStage`, `IngestStage`)."""
+
+    name: str
+    store: PostProcStore
+
+    def get_work_dir(self, s: Simulation, create: bool = True) -> pathlib.Path: ...
+
+    def stored_vars(self, s: Simulation) -> list[str]:
+        """Names of the variables the stage writes for sim `s`."""
+
+    def store_template(self, s: Simulation) -> FrameTemplate | None:
+        """One output frame of `s` plus its file structure, to lay out a store (None: `s` has no input yet)."""
 
 
 class Writer(abc.ABC):
@@ -56,4 +72,5 @@ class PostProcStore(pydantic.BaseModel, abc.ABC):
     @abc.abstractmethod
     @contextlib.contextmanager
     def writer(self, stage: Stage, s: Simulation, f: pathlib.Path) -> Iterator[Writer]:
-        """Context with the `Writer` for input file `f`. Leaving it without an exception commits the output."""
+        """Context with the `Writer` for input file `f`. Written frames are committed by `Writer.write` (zarr) or
+        when the context is left without an exception (netCDF: the temp file is renamed)."""

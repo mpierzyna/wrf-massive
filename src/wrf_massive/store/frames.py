@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import pathlib
+from collections.abc import Callable
 
 import netCDF4
 import numpy as np
@@ -53,3 +54,20 @@ class FrameTemplate:
     frames_per_file: int  # frames per input file: the shard length along lead time
     interval: np.timedelta64  # time between frames
     source: pathlib.Path  # file the template was taken from (for messages)
+
+    @classmethod
+    def from_inputs(
+        cls, inputs: list[pathlib.Path], first_frame: Callable[[pathlib.Path], xr.Dataset]
+    ) -> FrameTemplate:
+        """Template of a sim's input files: `first_frame(inputs[0])`, the largest number of frames per file and the
+        interval between frames (from the first file with two of them)."""
+        times = [frame_times(f) for f in inputs]
+        steps = [t[1] - t[0] for t in times if len(t) > 1]
+        if not steps:
+            raise ValueError(f"None of the {len(inputs)} input file(s) has two frames to take the interval from.")
+        return cls(
+            ds=first_frame(inputs[0]),
+            frames_per_file=max(len(t) for t in times),
+            interval=steps[0],
+            source=inputs[0],
+        )

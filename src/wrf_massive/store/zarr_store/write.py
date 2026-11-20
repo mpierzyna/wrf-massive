@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import netCDF4
+import numcodecs.blosc
 import numpy as np
 import xarray as xr
 
@@ -28,7 +29,8 @@ from wrf_massive.store.zarr_store.store import ZarrStore
 if TYPE_CHECKING:
     import zarr
 
-    from wrf_massive.base import Simulation, Stage
+    from wrf_massive.base import Simulation
+    from wrf_massive.store.base import StoreStage
 
 logger = get_logger("store.zarr")
 
@@ -66,7 +68,7 @@ def _leads(group: zarr.Group, s: Simulation, f: pathlib.Path) -> np.ndarray:
 
 
 @contextlib.contextmanager
-def session(cfg: ZarrStore, stage: Stage, s: Simulation, inputs: list[pathlib.Path]) -> Iterator[None]:
+def session(cfg: ZarrStore, stage: StoreStage, s: Simulation, inputs: list[pathlib.Path]) -> Iterator[None]:
     """Preflight checks (nothing is written if one fails), then hold the sim lock while the inputs are processed."""
     group = _open(cfg, stage.name)
 
@@ -159,6 +161,9 @@ class ZarrWriter(Writer):
     """Writes the frames of one input file into region `[sim, lead_time]` of each data array, then the mask."""
 
     def __init__(self, cfg: ZarrStore, stage_name: str, s: Simulation, f: pathlib.Path):
+        # Each worker process writes one file: Blosc threads on top would oversubscribe the CPUs. Set here, not at
+        # import, so readers (e.g. an ML data loader) keep Blosc's threads.
+        numcodecs.blosc.use_threads = False
         self.cfg, self.f = cfg, f
         self.group = _open(cfg, stage_name, mode="r+")
         self.idx = _sim_index(self.group, s, cfg, stage_name)

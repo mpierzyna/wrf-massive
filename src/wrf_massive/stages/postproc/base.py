@@ -6,9 +6,7 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import datetime
-import multiprocessing
 import os
 import pathlib
 import re
@@ -19,12 +17,13 @@ import numpy as np
 import pydantic
 import xarray as xr
 
-from wrf_massive.base import Simulation, Stage, TPath, TPathExists
+from wrf_massive.base import Simulation, TPath, TPathExists
 from wrf_massive.log import get_logger
+from wrf_massive.stages.parallel import FileParallelStage
 from wrf_massive.stages.postproc.iofields import parse_myoutfields
 from wrf_massive.stages.postproc.variables import REQUIRED_WRF_FIELDS, TVarList, var_name, wrf_fields_of
 from wrf_massive.stages.postproc.wrfout import load_wrfout, n_frames
-from wrf_massive.store.frames import FrameTemplate, frame_times
+from wrf_massive.store.frames import FrameTemplate
 from wrf_massive.store.netcdf import NetCDFStore
 from wrf_massive.store.zarr_store.store import ZarrStore
 
@@ -52,7 +51,7 @@ class PostProcFn(pydantic.BaseModel):
         return self.fn(ds)
 
 
-class PostProcStage(Stage):
+class PostProcStage(FileParallelStage):
     """Post-processing stage for wrfout files. Extracts variables and applies post-processing functions.
 
     Every variable needed (in `extract_vars` or required by a postproc fn) that no postproc fn returns is read from the
@@ -80,29 +79,7 @@ class PostProcStage(Stage):
     # Where the output goes; the stage only reads and processes
     store: TStore = pydantic.Field(default_factory=NetCDFStore)
 
-    run_parallel: bool = False  # whether to run in parallel using multiprocessing
-    # Number of parallel workers. None uses all allocated CPUs (`resources.cpus_total`). Set it lower to give each
-    # worker more memory, e.g. on clusters with a minimum allocation or a fixed memory per CPU.
-    n_workers: int | None = pydantic.Field(default=None, gt=0)
     discard_warmup: bool = True  # whether to discard wrfout files from warmup period (default: True)
-
-    @pydantic.model_validator(mode="after")
-    def ensure_resources_for_parallel(self) -> Self:
-        """A parallel run takes its worker count from `resources`, so refuse to build a stage that cannot."""
-        if self.run_parallel and self.resources is None:
-            raise ValueError(
-                "'run_parallel=True' requires 'resources' to be set: "
-                "the number of workers is taken from 'resources.cpus_total'."
-            )
-        if self.n_workers is not None:
-            if not self.run_parallel:
-                raise ValueError("'n_workers' is set but 'run_parallel=False', so it would be ignored.")
-            if self.n_workers > self.resources.cpus_total:
-                raise ValueError(
-                    f"'n_workers={self.n_workers}' exceeds the allocated CPUs "
-                    f"(resources.cpus_total={self.resources.cpus_total})."
-                )
-        return self
 
     # NOTE: The validators below must be model validators (not field validators), because field validators are
     # skipped for default values. Subclasses like Cn2PostProcStage define `extract_vars` as a class default, so a
@@ -237,53 +214,15 @@ class PostProcStage(Stage):
         # Deduplicate defensively: two workers writing the same output file corrupt it / fail on file locking
         inputs = list(dict.fromkeys(self.get_inputs(s)))
         with self.store.session(self, s, inputs):  # checks (fail before any processing) and locks
-            self._run_inputs(s, inputs)
+            self.process_files(s, inputs)
 
-    def _run_inputs(self, s: Simulation, inputs: List[pathlib.Path]):
-        if self.run_parallel:
-            # Parallel run
-            # `resources` guaranteed to exist by `ensure_resources_for_parallel`
-            n_workers = self.n_workers or self.resources.cpus_total
-            logger.info(f"Starting parallel post-processing of {len(inputs)} file(s) with {n_workers} workers...")
-            # Spawn, not fork: by now the parent may run threads (e.g. zarr's IO threads), and forking a
-            # multi-threaded process can deadlock the children. Workers import the stage's module afresh.
-            ctx = multiprocessing.get_context("spawn")
-            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as ex:
-                futures = [ex.submit(self.run_single, s, f) for f in inputs]
-
-                # Collect all failures instead of raising the first one: the pool waits for every queued
-                # future on exit anyway, so aborting early saves no time but loses the other error messages.
-                failures = []
-                for f in concurrent.futures.as_completed(futures):
-                    try:
-                        f.result()
-                    except Exception as e:
-                        logger.error(str(e))
-                        failures.append(e)
-
-            if failures:
-                raise RuntimeError(
-                    f"Post-processing failed for {len(failures)} of {len(inputs)} file(s). First error: {failures[0]}"
-                ) from failures[0]
-            logger.info("Done!")
-        else:
-            # Serial run
-            logger.info(f"Starting serial post-processing of {len(inputs)} file(s)...")
-            for f in inputs:
-                self.run_single(s, f)
-
-    def run_single(self, s: Simulation, i_f: int | pathlib.Path):
+    def run_single(self, s: Simulation, f: int | pathlib.Path):
         """Post-process a single wrfout file, given either as path or as index into `get_inputs`."""
-        f = self.get_inputs(s)[i_f] if isinstance(i_f, int) else i_f
-        try:
-            self._run_single(s, f)
-        except Exception as e:
-            # Attach the input file, which is otherwise lost when the error surfaces in the parent process
-            raise RuntimeError(f"Post-processing failed for {f.name}: {e}") from e
+        super().run_single(s, self.get_inputs(s)[f] if isinstance(f, int) else f)
 
-    def _run_single(self, s: Simulation, f: pathlib.Path):
+    def process_file(self, s: Simulation, f: pathlib.Path):
         # Process one frame at a time, so memory is bounded by the size of a single frame, not by the number of
-        # frames per file. The store's writer decides which frames are still missing and commits on success.
+        # frames per file. The store's writer decides which frames are still missing.
         n = n_frames(f)
         with self.store.writer(self, s, f) as w:
             pending = w.pending_frames(n)
@@ -330,16 +269,7 @@ class PostProcStage(Stage):
             inputs = self.get_inputs(s)
         except FileNotFoundError:
             return None
-        times = [frame_times(f) for f in inputs]
-        steps = [t[1] - t[0] for t in times if len(t) > 1]
-        if not steps:
-            raise ValueError(f"No input file of {s.name} has two frames to take the output interval from.")
-        return FrameTemplate(
-            ds=self._process_frame(inputs[0], 0),
-            frames_per_file=max(len(t) for t in times),
-            interval=steps[0],
-            source=inputs[0],
-        )
+        return FrameTemplate.from_inputs(inputs, lambda f: self._process_frame(f, 0))
 
     def is_done(self, s: Simulation) -> bool:
         try:

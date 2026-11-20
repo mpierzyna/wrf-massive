@@ -12,12 +12,8 @@ import json
 import pathlib
 from collections.abc import Iterator
 
-import numcodecs.blosc
 import numpy as np
 import zarr
-
-# Post-processing already runs one worker process per input file: Blosc threads on top would oversubscribe the CPUs
-numcodecs.blosc.use_threads = False
 
 SCHEMA_VERSION = 1
 

@@ -505,3 +505,14 @@ def test_verify(tmp_path):
 
     result = CliRunner().invoke(main, ["store", "verify", "--path", str(path)])
     assert result.exit_code == 0 and "7/50 frames written" in result.output
+
+
+def test_ingest_config():
+    """IngestStage shares the parallel options and their checks with PostProcStage (FileParallelStage)."""
+    from wrf_massive.store.ingest import IngestStage
+
+    kw = dict(work_dir="i", src=NetCDFStore(), store=ZarrStore(path="s.zarr", domain="d"))
+    with pytest.raises(pydantic.ValidationError, match="exceeds the allocated CPUs"):
+        IngestStage(**kw, run_parallel=True, resources=RESOURCES, n_workers=3)
+    with pytest.raises(pydantic.ValidationError, match="requires 'resources'"):
+        IngestStage(**kw, run_parallel=True)

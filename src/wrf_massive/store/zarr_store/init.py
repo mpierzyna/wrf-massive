@@ -20,24 +20,17 @@ import zarr
 from wrf_massive.store.frames import FrameTemplate
 from wrf_massive.store.zarr_store import layout as L
 from wrf_massive.store.zarr_store.encoding import Lossless
-from wrf_massive.store.zarr_store.store import ZarrStore
+from wrf_massive.store.zarr_store.store import ZarrStore, zarr_store_of
 
 if TYPE_CHECKING:
-    from wrf_massive.base import Simulation, Stage
+    from wrf_massive.base import Simulation
+    from wrf_massive.store.base import StoreStage
 
 
 _DROP_ATTRS = {"stagger", "coordinates", "projection", "MemoryOrder", "FieldType", "_FillValue", "missing_value"}
 
 
-def zarr_store_of(stage: Stage) -> ZarrStore:
-    """The `ZarrStore` a stage writes to, or a ValueError naming the stage."""
-    store = getattr(stage, "store", None)
-    if not isinstance(store, ZarrStore):
-        raise ValueError(f"Stage '{stage.name}' does not write to a ZarrStore (store: {type(store).__name__}).")
-    return store
-
-
-def init_domain(stage: Stage, sims: list[Simulation], dry_run: bool = False) -> list[str]:
+def init_domain(stage: StoreStage, sims: list[Simulation], dry_run: bool = False) -> list[str]:
     """Add the domain of `stage`'s ZarrStore and the given sims to the store (see `wrf-massive store init-domain`).
 
     Creates the store if needed and the domain group from a template (one processed frame of the first given sim
@@ -113,7 +106,7 @@ def _check_schema(attrs: dict, path) -> None:
         )
 
 
-def _find_template(stage: Stage, sims: list[Simulation]) -> tuple[FrameTemplate, Simulation]:
+def _find_template(stage: StoreStage, sims: list[Simulation]) -> tuple[FrameTemplate, Simulation]:
     for s in sims:
         template = stage.store_template(s)
         if template is not None:

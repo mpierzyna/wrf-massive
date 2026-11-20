@@ -235,10 +235,14 @@ postproc).
    project setup. `Cn2PostProcStage` stores only `ct2`/`cn2` (+ `z`/`HGT`/`p`); projects subclass it with their own
    `extract_vars`. A name needed both raw and destaggered raises at
    init (wrf-python's metadata decorators also need a template field, `P` for heights and 3D winds).
-   `run_parallel=True` uses a process pool of `n_workers` (default None = `resources.cpus_total`); `n_workers` may
-   only be set with `run_parallel` and must not exceed `cpus_total` (checked at init). Setting it lower trades CPUs
-   for memory per worker on clusters with a fixed memory per CPU or a minimum allocation.
-   `_run_single` works frame by frame to bound memory: `_process_frame(f, i)` reads frame `i`
+   `PostProcStage` (like `IngestStage`) is a `stages/parallel.py::FileParallelStage`: `process_file(s, f)` per input,
+   `process_files` runs them serially or with `run_parallel=True` in a `spawn` process pool of `n_workers` (default
+   None = `resources.cpus_total`; only with `run_parallel`, ≤ `cpus_total`, checked at init; lower trades CPUs for
+   memory per worker), collecting all failures; `run_single` names the failing file. Spawn, not fork: zarr's
+   IO/asyncio threads live in the parent once `session` ran, and forking a multi-threaded process can deadlock; so
+   stages and postproc fns must be importable by module name (a workspace's `pipeline.py` is, being on `sys.path`
+   after activation) and scripts running them in parallel need a `__main__` guard.
+   `process_file` works frame by frame to bound memory: `_process_frame(f, i)` reads frame `i`
    (`load_wrfout(..., timeidx=i)`; `read_var` re-adds the `Time` dim wrf-python drops for a single frame), applies the
    postproc fns (so they must be time-local), keeps the stored vars and casts float64 fn results to float32
    (`read_var` always returns float32: wrf-python's float64 is a double-precision computation artefact; there is no
@@ -246,19 +250,18 @@ postproc).
    `test_framewise_output_matches_whole_file` checks that both give identical files.
    **Writing is the job of `store`** (`wrf_massive/store/`, design in `store/DESIGN.md`): the stage only reads and
    processes. `PostProcStore` (pydantic, `extra="forbid"`, discriminated by `kind`) is configuration only, pickled
-   to the workers; `store.preflight(stage, s, inputs)` runs once in the parent before the pool, `store.is_done`
-   backs `PostProcStage.is_done`, and `store.writer(stage, s, f)` is a context manager yielding a `Writer` per input
+   to the workers; `store.session(stage, s, inputs)` is a context around the pool in the parent (checks + locks),
+   `store.is_done` backs `is_done`, and `store.writer(stage, s, f)` is a context manager yielding a `Writer` per input
    file in the worker: `pending_frames(n)` says which frames to process, `write(ds, i0)` takes one or more
-   consecutive frames, leaving the context without an exception commits. `NetCDFStore(compression, file_suffix)`
+   consecutive frames (zarr commits per write, netCDF when the context is left). What a store needs from a stage is
+   the `store/base.py::StoreStage` protocol (`store`, `stored_vars(s)`, `store_template(s)`, `get_work_dir`).
+   `NetCDFStore(compression, file_suffix)`
    (default of `PostProcStage`; `Cn2PostProcStage` defaults to `file_suffix="cn2"`) writes `<input>_<suffix>.nc`
    into the work dir: frame(s) at `i0 == 0` with `to_netcdf(unlimited_dims=["time"])` and `_encoding` (time as
    int64 `seconds since <t0>`, one chunk per frame, zlib if `compression`), later frames appended in place by
    `_append_frames` (h5netcdf `resize_dimension`), all into a hidden temp file renamed on commit; an existing
    output means the file is complete, so `pending_frames` returns `[]`. `tests/test_netcdf_store.py` covers the
    writer on synthetic frames (no wrf-python). `store` is a `TStore` (discriminated union NetCDFStore | ZarrStore).
-   Parallel workers use the `spawn` start method (not fork): zarr's IO/asyncio threads live in the parent once
-   `session` ran, and forking a multi-threaded process can deadlock; so stages and postproc fns must be importable
-   by module name (a workspace's `pipeline.py` is, being on `sys.path` after activation).
    **`ZarrStore`** (`store/zarr_store/`, `store` extra = zarr pinned >= 3.4.2 + healpy; zarr only imported when
    used, so configs load without it): `init.py::init_domain(stage, sims, dry_run)` (CLI `wrf-massive store
    init-domain --stage NAME SIM_DIRS`, global `--debug` = dry run) creates the root (`schema_version`) and the domain
@@ -272,7 +275,8 @@ postproc).
    (variables == `stage.stored_vars()` minus static/coords, static_vars, tile, encodings, sim initialized, input
    files on the lead grid, after `begin`, aligned with shards, no shard twice, `XLAT`/`XLONG`/static equal to the
    file's) + `fcntl` sim lock in the work dir; `ZarrWriter` maps frame times to lead indices, writes each variable's
-   region and sets `written` last (commit); `is_done` = all input frames written. Blosc runs single-threaded.
+   region and sets `written` last (commit); `is_done` = all input frames written. Blosc runs single-threaded in
+   writers (set in `ZarrWriter`, not at import, so readers keep Blosc threads).
    Readers open the domain dir as store (xarray's `group=` wants root consolidated metadata).
    `store/ingest.py::IngestStage(src=NetCDFStore, src_dir, store=ZarrStore)` copies netCDF output into a store
    (named `store` like `PostProcStage.store`, so init-domain/session/writer are shared; it provides `stored_vars(s)`

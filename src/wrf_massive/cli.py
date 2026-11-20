@@ -503,7 +503,7 @@ def store_verify(state: CliState, stage_name, store_path, domains, clean, sim_di
         p = state.pipeline
         if stage_name not in p.stages:
             raise click.UsageError(f"Unknown stage '{stage_name}'. Stages of the pipeline: {list(p.stages)}.")
-        from wrf_massive.store.zarr_store.init import zarr_store_of
+        from wrf_massive.store.zarr_store.store import zarr_store_of
 
         try:
             cfg = zarr_store_of(p[stage_name])

@@ -21,6 +21,14 @@ if TYPE_CHECKING:
     from wrf_massive.base import Simulation, Stage
 
 
+def zarr_store_of(stage: Stage) -> ZarrStore:
+    """The `ZarrStore` a stage writes to, or a ValueError naming the stage."""
+    store = getattr(stage, "store", None)
+    if not isinstance(store, ZarrStore):
+        raise ValueError(f"Stage '{stage.name}' does not write to a ZarrStore (store: {type(store).__name__}).")
+    return store
+
+
 class ZarrStore(PostProcStore):
     """One domain group of a zarr store that holds the post-processed output of many domains (see DESIGN.md).
 
