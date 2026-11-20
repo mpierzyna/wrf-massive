@@ -441,6 +441,23 @@ def submit(
             )
 
 
+def _zarr_stage(p: Pipeline, stage_name: str):
+    """The stage `stage_name` of pipeline `p`, which must write to a ZarrStore (UsageError naming the ones that do)."""
+    from wrf_massive.store.zarr_store.store import ZarrStore
+
+    if stage_name not in p.stages:
+        raise click.UsageError(f"Unknown stage '{stage_name}'. Stages of the pipeline: {list(p.stages)}.")
+    stage = p[stage_name]
+    store = getattr(stage, "store", None)
+    if not isinstance(store, ZarrStore):
+        zarr_stages = [n for n, st in p.stages.items() if isinstance(getattr(st, "store", None), ZarrStore)]
+        raise click.UsageError(
+            f"Stage '{stage_name}' ({type(stage).__name__}) writes to {type(store).__name__}, not to a ZarrStore. "
+            f"Stages of the pipeline that do: {zarr_stages or 'none'}."
+        )
+    return stage
+
+
 @main.group("store")
 def store_group():
     """Zarr store of post-processed output of many domains (needs the `store` extra)."""
@@ -459,14 +476,12 @@ def store_init_domain(state: CliState, stage_name: str, sim_dirs: Tuple[str, ...
     be done.
     """
     sim_dirs = _require_sim_dirs(sim_dirs)
-    p = state.pipeline
-    if stage_name not in p.stages:
-        raise click.UsageError(f"Unknown stage '{stage_name}'. Stages of the pipeline: {list(p.stages)}.")
+    stage = _zarr_stage(state.pipeline, stage_name)
     from wrf_massive.store.zarr_store.init import init_domain  # needs zarr: only here
 
     sims = [Simulation.from_disk(d) for d in sim_dirs]
     try:
-        report = init_domain(p[stage_name], sims, dry_run=state.debug)
+        report = init_domain(stage, sims, dry_run=state.debug)
     except (ValueError, RuntimeError) as e:
         raise click.ClickException(str(e)) from e
     for line in report:
@@ -500,15 +515,7 @@ def store_verify(state: CliState, stage_name, store_path, domains, clean, sim_di
 
     sims = None
     if stage_name is not None:
-        p = state.pipeline
-        if stage_name not in p.stages:
-            raise click.UsageError(f"Unknown stage '{stage_name}'. Stages of the pipeline: {list(p.stages)}.")
-        from wrf_massive.store.zarr_store.store import zarr_store_of
-
-        try:
-            cfg = zarr_store_of(p[stage_name])
-        except ValueError as e:
-            raise click.UsageError(str(e)) from e
+        cfg = _zarr_stage(state.pipeline, stage_name).store
         store_path, domains = cfg.abs_path, domains or (cfg.domain,)
         sims = [Simulation.from_disk(d).name for d in _require_sim_dirs(sim_dirs)] if sim_dirs else None
     elif sim_dirs:

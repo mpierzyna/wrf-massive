@@ -394,6 +394,7 @@ p = Pipeline(
         store=ZarrStore(path="store.zarr", domain="ws", tile=(2, 2), static_vars=["HGT"]),
         run_parallel=True, resources=Resources(n_tasks=1, cpus_per_task=2, mem_per_cpu="1G"),
     ),
+    nc=Cn2PostProcStage(work_dir="nc", wrfout_dir="wrfout", domain=1, extract_vars=["w"]),
 )
 """
 
@@ -421,6 +422,9 @@ def test_cli(tmp_path, monkeypatch, written):
         assert xr.open_zarr(tmp_path / "store.zarr" / "ws", consolidated=True)["written"].values.sum() == 4
         result = invoke("store", "init-domain", "--stage", "nope", s.sim_dir)
         assert result.exit_code != 0 and "Unknown stage 'nope'" in result.output
+        result = invoke("store", "init-domain", "--stage", "nc", s.sim_dir)  # writes netCDF
+        assert result.exit_code != 0 and "Stage 'nc' (Cn2PostProcStage) writes to NetCDFStore" in result.output
+        assert "Stages of the pipeline that do: ['cn2']" in result.output
 
         result = invoke("store", "verify", "--path", written.store.abs_path)
         assert result.exit_code == 0 and "8/50 frames written" in result.output
